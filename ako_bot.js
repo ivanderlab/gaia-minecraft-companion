@@ -213,7 +213,7 @@ ATURAN CHAT MINECRAFT:
             { role: "system", content: systemPrompt },
             { role: "user", content: `<${sender}>: ${userPrompt}` }
           ],
-          max_tokens: 280,
+          max_tokens: 350,
           stream: false,
           temperature: 0.72
         });
@@ -227,7 +227,7 @@ ATURAN CHAT MINECRAFT:
             "Content-Type": "application/json",
             "Authorization": `Bearer ${config.llmApiKey}`
           },
-          timeout: 12000
+          timeout: 18000
         }, (res) => {
           let body = "";
           res.on("data", chunk => body += chunk);
@@ -265,10 +265,14 @@ ATURAN CHAT MINECRAFT:
     });
   }
 
-  // Primary: Qwen 3.8 Flash, Fallback: Qwen 3.8 27B (NusaGate marketplace spot discount buffer)
-  let result = await querySingleModel(config.llmModel || "qwen3.8-flash");
-  if (!result && (config.llmModel || "qwen3.8-flash") !== "qwen3.8-27b") {
-    console.log("[Gaia LLM] Mengaktifkan fallback Qwen 3.8 27B via NusaGate...");
+  // Primary: deepseek-v4.1-flash, Fallback: qwen3.8-27b
+  const primaryModel = config.llmModel || "deepseek-v4.1-flash";
+  let result = await querySingleModel(primaryModel);
+  if (!result && primaryModel !== "deepseek-v4.1-flash") {
+    console.log("[Gaia LLM] Mengaktifkan fallback deepseek-v4.1-flash via NusaGate...");
+    result = await querySingleModel("deepseek-v4.1-flash");
+  } else if (!result && primaryModel === "deepseek-v4.1-flash") {
+    console.log("[Gaia LLM] Mengaktifkan fallback qwen3.8-27b via NusaGate...");
     result = await querySingleModel("qwen3.8-27b");
   }
   return result;
