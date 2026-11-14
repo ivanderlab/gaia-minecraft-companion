@@ -198,6 +198,7 @@ MEMORI OBROLAN SEBELUMNYA (Database Server):
 ${chatHistoryStr}
 
 Jika pemain meminta aksi fisik in-game, sertakan SATU tag aksi di PALING AWAL jawabanmu:
+- [ACTION:STOP] stop / berhenti / batalkan pekerjaan / jangan nambang lagi / diam di situ
 - [ACTION:FOLLOW] ikut / ngintil / jalan bareng
 - [ACTION:STAY] berhenti / tunggu / diam
 - [ACTION:FARM] jaga farm / afk farm / jaga grinder mob
@@ -310,6 +311,46 @@ function createBotInstance() {
   bot = mineflayer.createBot(botOpts);
 
   bot.loadPlugin(pathfinder);
+
+  // Global Task Flags & Controllers
+  let isMining = false;
+  let isHarvesting = false;
+  let isChopping = false;
+  let isFarmAfk = false;
+  let farmAnchorPos = null;
+  let farmInterval = null;
+  let lastFarmAttack = 0;
+  let isGuarding = false;
+  let guardInterval = null;
+  let isAimingBow = false;
+  let isEating = false;
+
+  // Master Job Terminator: Stop whatever the bot is currently doing
+  function stopAllJobs(caller, notify = true) {
+    isMining = false;
+    isHarvesting = false;
+    isChopping = false;
+
+    if (isFarmAfk) toggleFarmAfk(false);
+    if (isGuarding) toggleGuardMode(false);
+
+    if (bot.pathfinder) {
+      bot.pathfinder.setGoal(null);
+    }
+    bot.clearControlStates();
+
+    try { bot.stopDigging(); } catch (e) {}
+    try { bot.deactivateItem(); } catch (e) {}
+
+    if (bot.vehicle) {
+      try { bot.dismount(); } catch (e) {}
+    }
+
+    console.log(`[Job Control] Semua pekerjaan dihentikan oleh @${caller || 'system'}`);
+    if (notify) {
+      sendChat(`Hmph, ya udah semua kerjaanku ku stop! Sekarang aku standby diem di sini, Nat! >///<`);
+    }
+  }
 
   bot.on('spawn', () => {
     const { day, timeOfDay } = getMinecraftDay();
@@ -432,7 +473,7 @@ function createBotInstance() {
 
       // Info commands (available for everyone)
       if (cmd === 'help') {
-        sendChat(`Perintah: !tp, !follow, !stay, !farm (afk sentry), !mine <ore> [jml], !guard, !chop, !harvest, !drop [item] [jml], !droparmor, !offhand <item>, !scan, !boat, !exit, !pos, !day, !inv. Panggil nama "Gaia" di chat buat ngobrol! >///<`);
+        sendChat(`Perintah: !stop (batalin kerjaan), !follow, !stay, !farm (afk sentry), !mine <ore> [jml], !guard, !chop, !harvest, !eat, !drop [item] [jml], !droparmor, !offhand <item>, !scan, !boat, !exit, !pos, !day, !inv. Panggil nama "Gaia" di chat buat ngobrol! >///<`);
         return;
       }
       if (cmd === 'pos') {
@@ -542,8 +583,11 @@ function createBotInstance() {
 
         case 'stay':
         case 'stop':
-          bot.pathfinder.setGoal(null);
-          sendChat(`Hmph, ya udah aku diam di sini. Jangan lama-lama tinggalin aku! >///<`);
+        case 'cancel':
+        case 'abort':
+        case 'batal':
+        case 'diam':
+          stopAllJobs(username, true);
           return;
       }
       return;
@@ -573,7 +617,7 @@ function createBotInstance() {
           finalReply = finalReply.replace(/^\[ACTION:[A-Z]+\]\s*/i, '').trim();
 
           // Action security: only Nat and Ijul can trigger physical actions via LLM!
-          if (!isSpecial && ['FOLLOW', 'STAY', 'BOAT', 'EXIT', 'CHOP', 'HARVEST', 'FARM', 'AFK', 'MINE', 'DROP', 'DROPARMOR', 'GUARD', 'TP'].includes(action)) {
+          if (!isSpecial && ['FOLLOW', 'STAY', 'STOP', 'CANCEL', 'ABORT', 'BOAT', 'EXIT', 'CHOP', 'HARVEST', 'FARM', 'AFK', 'MINE', 'DROP', 'DROPARMOR', 'GUARD', 'TP'].includes(action)) {
             sendChat(`Hmph! Aku cuma mau disuruh sama Nat atau Ijul ya! >///<`);
             return;
           }
@@ -581,10 +625,28 @@ function createBotInstance() {
           // Execute action
           switch (action) {
             case 'FOLLOW': followPlayer(username); break;
-            case 'STAY': bot.pathfinder.setGoal(null); break;
+            case 'STAY':
+            case 'STOP':
+            case 'CANCEL':
+            case 'ABORT':
+              stopAllJobs(username, true); break;
             case 'FARM':
             case 'AFK': toggleFarmAfk(true); break;
-            case 'MINE': mineBlock(username, 'iron_ore', 3); break;
+            case 'MINE': {
+              let ore = 'iron_ore';
+              let count = 3;
+              if (/coal|arang/i.test(userPrompt)) ore = 'coal_ore';
+              else if (/copper|tembaga/i.test(userPrompt)) ore = 'copper_ore';
+              else if (/gold|emas/i.test(userPrompt)) ore = 'gold_ore';
+              else if (/diamond|berlian/i.test(userPrompt)) ore = 'diamond_ore';
+              else if (/redstone/i.test(userPrompt)) ore = 'redstone_ore';
+              else if (/lapis/i.test(userPrompt)) ore = 'lapis_ore';
+              else if (/stone|batu/i.test(userPrompt)) ore = 'stone';
+              const numMatch = userPrompt.match(/\b(\d+)\b/);
+              if (numMatch) count = Math.min(parseInt(numMatch[1], 10), 16);
+              mineBlock(username, ore, count);
+              break;
+            }
             case 'BOAT': mountNearestBoat(username); break;
             case 'EXIT': if (bot.vehicle) bot.dismount(); break;
             case 'EAT':
@@ -613,8 +675,59 @@ function createBotInstance() {
     }
   });
 
+  // Helper: Sleep promise
+  function sleep(ms) {
+    return new Promise(res => setTimeout(res, ms));
+  }
+
+  // Automatic Drop Collection Engine (Vacuum up broken items)
+  async function pickupNearbyDrops(originPos, maxWaitMs = 3500) {
+    if (!bot || !bot.entity) return;
+    const { GoalNear } = require('mineflayer-pathfinder').goals;
+
+    // 1. Move to the broken block coordinate to collect immediate drops
+    if (originPos) {
+      const dropSpot = originPos.offset(0.5, 0.2, 0.5);
+      try {
+        bot.pathfinder.setGoal(new GoalNear(dropSpot.x, dropSpot.y, dropSpot.z, 1.1));
+        let waited = 0;
+        while (bot.entity.position.distanceTo(dropSpot) > 1.2 && waited < maxWaitMs && (isMining || isChopping || isHarvesting)) {
+          await sleep(150);
+          waited += 150;
+        }
+      } catch (e) {}
+    }
+
+    // 2. Scan and vacuum any dropped item entities within 6 blocks
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitMs && (isMining || isChopping || isHarvesting)) {
+      const itemEntity = bot.nearestEntity(e => {
+        if (!e || e.name !== 'item') return false;
+        return bot.entity.position.distanceTo(e.position) <= 6.0;
+      });
+
+      if (!itemEntity) break; // All items collected!
+
+      try {
+        bot.pathfinder.setGoal(new GoalNear(itemEntity.position.x, itemEntity.position.y, itemEntity.position.z, 0.6));
+        let itemWait = 0;
+        while (itemEntity.isValid && bot.entity.position.distanceTo(itemEntity.position) > 0.8 && itemWait < 1500 && (isMining || isChopping || isHarvesting)) {
+          await sleep(100);
+          itemWait += 100;
+        }
+      } catch (e) {
+        break;
+      }
+    }
+    bot.pathfinder.setGoal(null);
+  }
+
   // Handle Chop Wood / Tree
   async function chopWood(caller) {
+    if (isChopping) {
+      sendChat(`Sabar dong! Aku lagi proses nebang pohon nih >///<`);
+      return;
+    }
     const logBlock = bot.findBlock({
       matching: (block) => block && block.name && block.name.includes('_log'),
       maxDistance: 16
@@ -625,6 +738,7 @@ function createBotInstance() {
       return;
     }
 
+    isChopping = true;
     sendChat(`I-Iya aku tebangin pohon di X:${logBlock.position.x} Y:${logBlock.position.y} Z:${logBlock.position.z}... Bukan karena disuruh ya! >///<`);
 
     const axe = bot.inventory.items().find(i => i.name.includes('_axe'));
@@ -635,26 +749,30 @@ function createBotInstance() {
     const { GoalBlock } = require('mineflayer-pathfinder').goals;
     bot.pathfinder.setGoal(new GoalBlock(logBlock.position.x, logBlock.position.y, logBlock.position.z));
 
-    const checkInterval = setInterval(async () => {
-      if (!bot || !bot.entity) { clearInterval(checkInterval); return; }
-      if (bot.entity.position.distanceTo(logBlock.position) <= 4.5) {
-        clearInterval(checkInterval);
-        bot.pathfinder.setGoal(null);
-        try {
-          await bot.dig(logBlock);
-          sendChat(`Pohon sudah berhasil ditebang! Nih aku kumpulin dropnya >///<`);
-          setTimeout(() => {
-            returnToOwner(caller);
-          }, 2000);
-        } catch (err) {
-          sendChat(`Gagal nebang pohon: ${err.message}`);
-        }
+    let waited = 0;
+    while (bot && bot.entity && bot.entity.position.distanceTo(logBlock.position) > 4.5 && waited < 5000 && isChopping) {
+      await sleep(250);
+      waited += 250;
+    }
+
+    if (!isChopping) return;
+
+    if (bot.entity.position.distanceTo(logBlock.position) <= 4.5) {
+      bot.pathfinder.setGoal(null);
+      try {
+        const brokenPos = logBlock.position.clone();
+        await bot.dig(logBlock);
+        sendChat(`Pohon sudah berhasil ditebang! Nih aku kumpulin dropnya >///<`);
+        await pickupNearbyDrops(brokenPos, 3000);
+        returnToOwner(caller);
+      } catch (err) {
+        sendChat(`Gagal nebang pohon: ${err.message}`);
       }
-    }, 500);
+    }
+    isChopping = false;
   }
 
-  // Handle Smart Mining (Ores & Stone)
-  let isMining = false;
+  // Handle Smart Mining (Ores & Stone) with Auto Drop Pickup
   async function mineBlock(caller, targetName = 'iron_ore', targetCount = 3) {
     if (isMining) {
       sendChat(`Sabar dong! Aku lagi proses nambang nih >///<`);
@@ -699,16 +817,23 @@ function createBotInstance() {
       try {
         bot.pathfinder.setGoal(new GoalBlock(block.position.x, block.position.y, block.position.z));
         let waited = 0;
-        while (bot.entity.position.distanceTo(block.position) > 4.2 && waited < 5000) {
+        while (bot.entity.position.distanceTo(block.position) > 4.2 && waited < 5000 && isMining) {
           await sleep(250);
           waited += 250;
         }
         bot.pathfinder.setGoal(null);
 
+        if (!isMining) break;
+
         if (bot.entity.position.distanceTo(block.position) <= 4.6) {
+          const brokenPos = block.position.clone();
           await bot.dig(block);
           mined++;
-          await sleep(300);
+          console.log(`[Mine] Sukses tambang ${block.name} (${mined}/${targetCount}), bergerak mengambil item drop...`);
+
+          // CRITICAL: Auto-navigate directly to the dropped item coordinates!
+          await pickupNearbyDrops(brokenPos, 3500);
+          await sleep(200);
         }
       } catch (err) {
         console.warn('[Mine Step Error]', err.message);
@@ -716,14 +841,16 @@ function createBotInstance() {
       }
     }
 
+    const wasMined = mined;
+    const shouldReturn = isMining;
     isMining = false;
-    if (mined > 0) {
-      sendChat(`Selesai nambang! Berhasil dapet ${mined} blok ${targetName}. Nih aku balik >///<`);
+    if (shouldReturn) {
+      if (wasMined > 0) {
+        sendChat(`Selesai nambang! Berhasil dapet ${wasMined} blok ${targetName}. Nih aku balik >///<`);
+      }
+      returnToOwner(caller);
     }
-    returnToOwner(caller);
   }
-
-  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
   // 1. Auto-Equip Armor & Offhand Shield
   const ARMOR_PRIORITY = {
@@ -874,7 +1001,6 @@ function createBotInstance() {
   }
 
   // 5. Harvest Crops Loop (Break -> Replant 1 Cycle until complete)
-  let isHarvesting = false;
   async function harvestCropsLoop(caller) {
     if (isHarvesting) {
       sendChat(`Sabar dong! Aku lagi proses panen kebun nih >///<`);
@@ -1037,10 +1163,6 @@ function createBotInstance() {
     }
     return true;
   }
-
-  let isGuarding = false;
-  let guardInterval = null;
-  let isAimingBow = false;
 
   function toggleGuardMode(enable) {
     isGuarding = enable;
@@ -1212,11 +1334,6 @@ function createBotInstance() {
   // ==========================================
   // MODULE 3: AFK Farm Sentry Mode
   // ==========================================
-  let isFarmAfk = false;
-  let farmAnchorPos = null;
-  let farmInterval = null;
-  let lastFarmAttack = 0;
-
   function toggleFarmAfk(enable) {
     isFarmAfk = enable;
     if (farmInterval) {
@@ -1480,7 +1597,6 @@ function createBotInstance() {
   }
 
   // Handle Auto-Eat & Modern Async Consumption Engine
-  let isEating = false;
   const HARMFUL_FOODS = new Set([
     'pufferfish', 'pufferfish_bucket', 'poisonous_potato', 'rotten_flesh', 'spider_eye',
     'salmon_bucket', 'cod_bucket', 'tropical_fish_bucket'

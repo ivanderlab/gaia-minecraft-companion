@@ -65,7 +65,8 @@
 | `!eat` | Memakan makanan yang tersedia di tas | Semua Pemain |
 | `!tp` / `!accept` | Menerima request teleportasi (TPA) | Nat & Ijul |
 | `!follow` | Mengikuti langkah langkah pemain | Nat & Ijul |
-| `!stay` / `!stop` | Berhenti bergerak dan diam di tempat | Nat & Ijul |
+| `!stop` / `!stay` / `!cancel` | Menghentikan & membatalkan SEMUA pekerjaan aktif (mining, harvest, chop, afk farm, guard) | Nat & Ijul |
+| `!mine <ore> [jml]` | Menambang ore/blok dan otomatis melangkah menyedot item drop ke tas | Nat & Ijul |
 | `!farm` / `!afk` | Mengaktifkan mode AFK Farm Sentry (kunci posisi & babat mob) | Nat & Ijul |
 | `!guard` | Mengaktifkan mode pengawalan & memanah monster liar | Nat & Ijul |
 | `!chop` / `!wood` | Mencari dan menebang pohon kayu terdekat | Nat & Ijul |
