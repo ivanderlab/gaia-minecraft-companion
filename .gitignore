@@ -1,0 +1,8 @@
+node_modules/
+config.json
+chat_logs/
+scans/
+*.log
+.env
+.DS_Store
+*backup*.js

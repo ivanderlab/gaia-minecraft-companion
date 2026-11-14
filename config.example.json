@@ -1,0 +1,15 @@
+{
+  "host": "your-minecraft-server.com",
+  "port": 25565,
+  "username": "Gaia",
+  "owner": "YourMinecraftUsername",
+  "commanders": [
+    "YourMinecraftUsername",
+    "FriendUsername"
+  ],
+  "autoTpa": true,
+  "scanRadius": 10,
+  "llmEndpoint": "https://api.nusagate.com/v1",
+  "llmApiKey": "YOUR_NUSAGATE_OR_OPENAI_API_KEY",
+  "llmModel": "qwen3.8-flash"
+}
