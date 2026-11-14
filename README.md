@@ -1,4 +1,4 @@
-# 🌸 Gaia — Autonomous Tsundere Agentic AI Companion for Minecraft SMP (v1.3)
+# 🌸 Gaia — Autonomous Tsundere Agentic AI Companion for Minecraft SMP
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org)
@@ -52,7 +52,7 @@
 - **Proximity Greet**: Menyapa Nat atau Ijul secara mandiri saat mendekat setelah bepergian jauh.
 - **Auto-Replant Farm**: Memanen tanaman matang di sekitar base dan menanam bibitnya kembali.
 
-### 5. ⛏️ Smart Mining Vacuum & Master Job Terminator (Baru di v1.3)
+### 5. ⛏️ Smart Mining Vacuum & Master Job Terminator
 - **Auto Drop Collection Engine (`pickupNearbyDrops`)**: Saat menambang (`!mine`), Gaia tidak hanya memecahkan blok dari jarak jauh, melainkan otomatis melangkah ke koordinat jatuhnya blok dan menyedot seluruh entitas drop (`item`) dalam radius 6 blok ke dalam inventory.
 - **Master Job Terminator (`!stop` / `!stay` / `!cancel`)**: Menghentikan SEMUA pekerjaan aktif secara instan — baik loop penambangan, tebang kayu, panen kebun, AFK farm sentry, maupun guard mode — dan mengunci posisi standby di tempat.
 - **Modern Async/Await Consumption Engine**: Sistem makan berbasis Promise murni dengan prioritas Golden Apple saat sekarat atau Golden Carrot untuk saturasi penuh, dilengkapi antrean rate-limiting chat 450ms tanpa paket drop.
