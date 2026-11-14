@@ -1,9 +1,9 @@
-# 🌸 Gaia — Autonomous Tsundere Agentic AI Companion for Minecraft SMP (v1.2)
+# 🌸 Gaia — Autonomous Tsundere Agentic AI Companion for Minecraft SMP (v1.3)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org)
 [![Minecraft](https://img.shields.io/badge/Minecraft-Fabric%2026.x%20%7C%201.21.2+-blue.svg)](https://minecraft.net)
-[![LLM Brain](https://img.shields.io/badge/Brain-Qwen%203.8%20Flash%20%2F%2027B-purple.svg)](https://qwenlm.github.io)
+[![LLM Brain](https://img.shields.io/badge/Brain-DeepSeek%20v4.1%20Flash-blue.svg)](https://deepseek.com)
 [![Author](https://img.shields.io/badge/Creator-IvanderLab-blueviolet.svg)](https://github.com/ivanderlab)
 
 > **"Hmph! B-Bukan karena aku pengen bantuin kamu ya, Nat! Dasar pemalas >///<"**
@@ -51,6 +51,12 @@
 - **Curiosity Roaming**: Jika menganggur (*idle* $> 25$ detik), Gaia berjalan-jalan santai dalam radius aman base (tidak menjadi patung diam).
 - **Proximity Greet**: Menyapa Nat atau Ijul secara mandiri saat mendekat setelah bepergian jauh.
 - **Auto-Replant Farm**: Memanen tanaman matang di sekitar base dan menanam bibitnya kembali.
+
+### 5. ⛏️ Smart Mining Vacuum & Master Job Terminator (Baru di v1.3)
+- **Auto Drop Collection Engine (`pickupNearbyDrops`)**: Saat menambang (`!mine`), Gaia tidak hanya memecahkan blok dari jarak jauh, melainkan otomatis melangkah ke koordinat jatuhnya blok dan menyedot seluruh entitas drop (`item`) dalam radius 6 blok ke dalam inventory.
+- **Master Job Terminator (`!stop` / `!stay` / `!cancel`)**: Menghentikan SEMUA pekerjaan aktif secara instan — baik loop penambangan, tebang kayu, panen kebun, AFK farm sentry, maupun guard mode — dan mengunci posisi standby di tempat.
+- **Modern Async/Await Consumption Engine**: Sistem makan berbasis Promise murni dengan prioritas Golden Apple saat sekarat atau Golden Carrot untuk saturasi penuh, dilengkapi antrean rate-limiting chat 450ms tanpa paket drop.
+- **Dynamic Natural Ore Parsing**: DeepSeek LLM secara otomatis menerjemahkan perintah obrolan natural (seperti *"Gaia cari batu 10"* atau *"Gaia gali coal"*) menjadi parameter jenis ore dan jumlah blok yang tepat.
 
 ---
 
