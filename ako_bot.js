@@ -87,7 +87,25 @@ function isNatOrIjul(username) {
   return list.includes(lower);
 }
 
-// Helper: Send chat to Minecraft (without prefixes, split if too long)
+// Helper: Send chat to Minecraft (without prefixes, split if too long, rate-limit queue)
+const chatQueue = [];
+let isSendingChat = false;
+
+function processChatQueue() {
+  if (isSendingChat || chatQueue.length === 0 || !bot) return;
+  isSendingChat = true;
+  const nextMsg = chatQueue.shift();
+  try {
+    bot.chat(nextMsg);
+  } catch (err) {
+    console.warn('[Chat Error]', err.message);
+  }
+  setTimeout(() => {
+    isSendingChat = false;
+    processChatQueue();
+  }, 450);
+}
+
 function sendChat(msg) {
   if (!bot || !msg) return;
   // Clean prefix if any
@@ -97,11 +115,12 @@ function sendChat(msg) {
   if (clean.length > 220) {
     const part1 = clean.slice(0, 210);
     const part2 = clean.slice(210);
-    bot.chat(part1);
-    setTimeout(() => { if (bot) bot.chat(part2); }, 500);
+    chatQueue.push(part1);
+    chatQueue.push(part2);
   } else {
-    bot.chat(clean);
+    chatQueue.push(clean);
   }
+  processChatQueue();
 }
 
 // Helper: Resolve Biome Display Name with pre-cached mcData
@@ -432,7 +451,7 @@ function createBotInstance() {
         return;
       }
       if (cmd === 'eat' || cmd === 'food' || cmd === 'makan') {
-        tryEatFood();
+        tryEatFood(true);
         return;
       }
       if (cmd === 'scan' || cmd === 'plan') {
@@ -569,7 +588,7 @@ function createBotInstance() {
             case 'BOAT': mountNearestBoat(username); break;
             case 'EXIT': if (bot.vehicle) bot.dismount(); break;
             case 'EAT':
-            case 'MAKAN': tryEatFood(); break;
+            case 'MAKAN': tryEatFood(true); break;
             case 'SCAN': executeAreaScan(username, 10); break;
             case 'CHOP': chopWood(username); break;
             case 'HARVEST': harvestCropsLoop(username); break;
@@ -1079,7 +1098,7 @@ function createBotInstance() {
   }
 
   async function engageHostileNearby() {
-    if (!bot || !bot.entity || isHarvesting || isAimingBow || isFarmAfk) return;
+    if (!bot || !bot.entity || isHarvesting || isAimingBow || isFarmAfk || isEating) return;
 
     // Filter: Hostile mobs with strict Enderman check, NEVER players!
     const mob = bot.nearestEntity(e => {
@@ -1233,9 +1252,10 @@ function createBotInstance() {
     }
 
     // 2. Auto-Eat if food or health dips
-    if (bot.food < 16 || bot.health < 16) {
-      tryEatFood();
+    if (!isEating && (bot.food < 16 || bot.health < 16)) {
+      tryEatFood(false);
     }
+    if (isEating) return;
 
     // 3. Auto-Equip best melee weapon (Sword first, then Axe)
     const weapon = bot.inventory.items().find(i => i.name.includes('_sword')) ||
@@ -1296,8 +1316,8 @@ function createBotInstance() {
     }
 
     // 2. Auto-Eat Reflex
-    if (bot.food < 15 || (bot.health < 16 && bot.food < 20)) {
-      tryEatFood();
+    if (!isEating && (bot.food < 15 || (bot.health < 16 && bot.food < 20))) {
+      tryEatFood(false);
     }
 
     // 3. Skip heavy autonomous actions if engaged in active user tasks
@@ -1459,29 +1479,94 @@ function createBotInstance() {
     sendChat(`Isi tasku: ${summary}${items.length > 5 ? '... dsb' : ''}. Jangan asal titip sampah ya! >///<`);
   }
 
-  // Handle Auto-Eat
-  function tryEatFood() {
+  // Handle Auto-Eat & Modern Async Consumption Engine
+  let isEating = false;
+  const HARMFUL_FOODS = new Set([
+    'pufferfish', 'pufferfish_bucket', 'poisonous_potato', 'rotten_flesh', 'spider_eye',
+    'salmon_bucket', 'cod_bucket', 'tropical_fish_bucket'
+  ]);
+
+  async function tryEatFood(forceFeedback = false) {
+    if (!bot || !bot.inventory) return;
+    if (isEating) return;
+
+    // 1. Food bar level check: In vanilla Minecraft, normal food cannot be consumed when food === 20
     if (bot.food >= 20) {
-      sendChat(`Perutku masih kenyang (Food 20), belum bisa makan lagi, Nat! >///<`);
-      return;
+      const gapple = bot.inventory.items().find(i => i.name.includes('golden_apple'));
+      if (!gapple) {
+        if (forceFeedback) {
+          sendChat(`Perutku masih kenyang (Food 20/20, Darah ${Math.round(bot.health)}/20)! Di Minecraft makanan biasa nggak bisa dimakan pas kenyang, tunggu regenerasi darah ya Nat! >///<`);
+        }
+        return;
+      }
     }
 
-    const food = bot.inventory.items().find(item => {
+    // 2. Comprehensive edible item detector
+    const foods = bot.inventory.items().filter(item => {
       const name = item.name.toLowerCase();
+      if (HARMFUL_FOODS.has(name)) return false;
+      if (mcData && mcData.foodsByName && mcData.foodsByName[name]) return true;
       return name.includes('bread') || name.includes('steak') || name.includes('cooked') ||
-             name.includes('apple') || name.includes('carrot') || name.includes('potato');
+             name.includes('carrot') || name.includes('potato') || name.includes('apple') ||
+             name.includes('porkchop') || name.includes('beef') || name.includes('mutton') ||
+             name.includes('chicken') || name.includes('rabbit') || name.includes('cod') ||
+             name.includes('salmon') || name.includes('fish') || name.includes('berries') ||
+             name.includes('melon') || name.includes('pie') || name.includes('soup') ||
+             name.includes('stew') || name.includes('cookie');
     });
 
-    if (!food) {
-      sendChat(`Nggak ada makanan di tasku! Bagi roti atau wortel dong... laper nih >///<`);
+    if (foods.length === 0) {
+      if (forceFeedback) {
+        sendChat(`Nggak ada makanan di tasku! Bagi roti, steak, atau wortel dong... laper nih >///<`);
+      }
       return;
     }
 
-    bot.equip(food, 'hand', () => {
-      bot.consume(() => {
-        sendChat(`Nyam! Akhirnya makan ${food.name}, makasih ya >///<`);
-      });
+    // 3. Priority Sort: Golden Apple if health <= 10, otherwise highest nutrition cooked food
+    foods.sort((a, b) => {
+      const aName = a.name.toLowerCase();
+      const bName = b.name.toLowerCase();
+      if (bot.health <= 10 && aName.includes('golden_apple')) return -1;
+      if (bot.health <= 10 && bName.includes('golden_apple')) return 1;
+
+      const getScore = (name) => {
+        if (name.includes('golden_apple')) return 10;
+        if (name.includes('cooked_beef') || name.includes('steak') || name.includes('cooked_porkchop')) return 9;
+        if (name.includes('golden_carrot')) return 8;
+        if (name.includes('cooked')) return 7;
+        if (name.includes('bread')) return 6;
+        if (name.includes('carrot') || name.includes('baked_potato')) return 5;
+        if (name.includes('apple') || name.includes('melon')) return 4;
+        return 2;
+      };
+      return getScore(bName) - getScore(aName);
     });
+
+    const bestFood = foods[0];
+    isEating = true;
+
+    try {
+      console.log(`[Auto-Eat] Mempersiapkan makanan: ${bestFood.name} (Food: ${bot.food}/20, Health: ${bot.health}/20)`);
+      const prevGoal = bot.pathfinder.goal;
+
+      // Stop moving momentarily so walking / jumping doesn't break eating packet
+      bot.clearControlStates();
+      await bot.equip(bestFood, 'hand');
+      await bot.consume();
+      console.log(`[Auto-Eat] Sukses makan ${bestFood.name}! (Food: ${bot.food}/20, Health: ${bot.health}/20)`);
+      sendChat(`Nyam! Akhirnya makan ${bestFood.name}, makasih ya >///<`);
+
+      if (prevGoal) {
+        bot.pathfinder.setGoal(prevGoal, true);
+      }
+    } catch (err) {
+      console.warn('[Auto-Eat Error]', err.message);
+      if (forceFeedback && err.message.includes('Food is full')) {
+        sendChat(`Perutku kenyang (Food 20), belum bisa makan lagi, Nat! >///<`);
+      }
+    } finally {
+      isEating = false;
+    }
   }
 
   // 3D Terrain & Build Planning Scanner
@@ -1622,8 +1707,8 @@ ${Object.entries(blockCounts).sort((a,b) => b[1] - a[1]).slice(0, 8).map(([name,
       }
     }
     // Auto-eat if hungry OR if damaged and food is not full
-    if (bot.food < 18 || (bot.health < 18 && bot.food < 20)) {
-      tryEatFood();
+    if (!isEating && (bot.food < 18 || (bot.health < 18 && bot.food < 20))) {
+      tryEatFood(false);
     }
   });
 
