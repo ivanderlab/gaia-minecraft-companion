@@ -80,6 +80,10 @@
 | `!scan [radius]` | Memindai kontur 3D tanah & menyimpan blueprint bangunan | Nat & Ijul |
 | `!boat` / `!mount` | Menaiki perahu terdekat sebagai penumpang | Nat & Ijul |
 | `!exit` | Turun dari perahu | Nat & Ijul |
+| `!craft <item> [jml]` | Merakit item secara otomatis (mendukung 2x2 tas & 3x3 Crafting Table) | Nat & Ijul |
+| `!chest [list/deposit/withdraw]` | Mengakses peti/barrel terdekat (cek isi, simpan hasil tambang, atau ambil barang) | Nat & Ijul |
+| `!sleep` / `!bed` | Mencari kasur terdekat dan tidur saat malam / badai petir | Nat & Ijul |
+| `!wake` | Bangun dari kasur | Nat & Ijul |
 | `!drop [item] [jml]` | Memberikan barang/hasil panen ke pemain | Nat & Ijul |
 | `!droparmor` | Melepaskan seluruh armor dan senjata | Nat & Ijul |
 

@@ -201,6 +201,10 @@ Jika pemain meminta aksi fisik in-game, sertakan SATU tag aksi di PALING AWAL ja
 - [ACTION:STOP] stop / berhenti / batalkan pekerjaan / jangan nambang lagi / diam di situ
 - [ACTION:FOLLOW] ikut / ngintil / jalan bareng
 - [ACTION:STAY] berhenti / tunggu / diam
+- [ACTION:SLEEP] tidur / ke kasur / bobo
+- [ACTION:WAKE] bangun dari kasur
+- [ACTION:CRAFT] bikin / buat / rakit barang (contoh: pickaxe, torch, chest)
+- [ACTION:CHEST] simpan / ambil / cek isi chest atau barrel
 - [ACTION:FARM] jaga farm / afk farm / jaga grinder mob
 - [ACTION:MINE] tambang / mining / cari ore / gali batu atau diamond
 - [ACTION:EAT] makan makanan / restore darah
@@ -364,7 +368,11 @@ function createBotInstance() {
       const defaultMove = new Movements(bot, mcData);
       defaultMove.canDig = false;
       defaultMove.canSwim = true;
+      defaultMove.canOpenDoors = true; // Enables walking through wooden doors & fence gates
+      defaultMove.allowParkour = true; // Enables natural 1-block gap jumps
+      defaultMove.allowSprinting = true; // Natural movement rhythm
       defaultMove.liquidCost = 1.5;
+      defaultMove.heuristicCost = 1.1; // Smooth human-like A* trajectory
       bot.pathfinder.setMovements(defaultMove);
     } catch (err) {
       console.warn('[Gaia] Pathfinder init note:', err.message);
@@ -397,6 +405,12 @@ function createBotInstance() {
             }
           }
         }
+      } catch (e) {}
+
+      // Module 1b: Natural Humanoid Door Traversal & Anti-Suffocation Reflex
+      try {
+        checkAndOpenDoors();
+        checkSuffocation();
       } catch (e) {}
     });
 
@@ -473,7 +487,7 @@ function createBotInstance() {
 
       // Info commands (available for everyone)
       if (cmd === 'help') {
-        sendChat(`Perintah: !stop (batalin kerjaan), !follow, !stay, !farm (afk sentry), !mine <ore> [jml], !guard, !chop, !harvest, !eat, !drop [item] [jml], !droparmor, !offhand <item>, !scan, !boat, !exit, !pos, !day, !inv. Panggil nama "Gaia" di chat buat ngobrol! >///<`);
+        sendChat(`Perintah: !stop, !follow, !stay, !sleep, !wake, !craft <item> [jml], !chest [list/deposit/withdraw], !farm, !mine <ore> [jml], !guard, !chop, !harvest, !eat, !drop, !droparmor, !scan, !pos, !day, !inv. Panggil "Gaia" di chat! >///<`);
         return;
       }
       if (cmd === 'pos') {
@@ -581,6 +595,30 @@ function createBotInstance() {
           followPlayer(username);
           return;
 
+        case 'craft':
+        case 'bikin':
+        case 'buat':
+          craftItem(username, args[1], args[2]);
+          return;
+
+        case 'chest':
+        case 'peti':
+        case 'barrel':
+          manageChest(username, args[1] || 'list', args[2], args[3]);
+          return;
+
+        case 'sleep':
+        case 'bed':
+        case 'tidur':
+        case 'bobo':
+          goToBedAndSleep(username);
+          return;
+
+        case 'wake':
+        case 'bangun':
+          wakeUp(username);
+          return;
+
         case 'stay':
         case 'stop':
         case 'cancel':
@@ -617,7 +655,7 @@ function createBotInstance() {
           finalReply = finalReply.replace(/^\[ACTION:[A-Z]+\]\s*/i, '').trim();
 
           // Action security: only Nat and Ijul can trigger physical actions via LLM!
-          if (!isSpecial && ['FOLLOW', 'STAY', 'STOP', 'CANCEL', 'ABORT', 'BOAT', 'EXIT', 'CHOP', 'HARVEST', 'FARM', 'AFK', 'MINE', 'DROP', 'DROPARMOR', 'GUARD', 'TP'].includes(action)) {
+          if (!isSpecial && ['FOLLOW', 'STAY', 'STOP', 'CANCEL', 'ABORT', 'BOAT', 'EXIT', 'CHOP', 'HARVEST', 'FARM', 'AFK', 'MINE', 'DROP', 'DROPARMOR', 'GUARD', 'TP', 'CRAFT', 'CHEST', 'SLEEP', 'WAKE'].includes(action)) {
             sendChat(`Hmph! Aku cuma mau disuruh sama Nat atau Ijul ya! >///<`);
             return;
           }
@@ -632,6 +670,32 @@ function createBotInstance() {
               stopAllJobs(username, true); break;
             case 'FARM':
             case 'AFK': toggleFarmAfk(true); break;
+            case 'SLEEP':
+            case 'BED':
+            case 'TIDUR':
+              goToBedAndSleep(username);
+              break;
+            case 'WAKE':
+            case 'BANGUN':
+              wakeUp(username);
+              break;
+            case 'CRAFT': {
+              const numMatch = userPrompt.match(/\b(\d+)\b/);
+              const count = numMatch ? numMatch[1] : '1';
+              const cleaned = userPrompt.replace(/\b(craft|bikin|buat|tolong|kan|dong|lah|\d+)\b/gi, '').trim();
+              craftItem(username, cleaned, count);
+              break;
+            }
+            case 'CHEST': {
+              if (/simpan|taruh|deposit/i.test(userPrompt)) {
+                manageChest(username, 'deposit');
+              } else if (/ambil|withdraw/i.test(userPrompt)) {
+                manageChest(username, 'withdraw', 'iron', '5');
+              } else {
+                manageChest(username, 'list');
+              }
+              break;
+            }
             case 'MINE': {
               let ore = 'iron_ore';
               let count = 3;
@@ -1601,10 +1665,16 @@ function createBotInstance() {
     'pufferfish', 'pufferfish_bucket', 'poisonous_potato', 'rotten_flesh', 'spider_eye',
     'salmon_bucket', 'cod_bucket', 'tropical_fish_bucket'
   ]);
+  let lastEatTime = 0;
+  let lastEatChatTime = 0;
 
   async function tryEatFood(forceFeedback = false) {
     if (!bot || !bot.inventory) return;
     if (isEating) return;
+
+    const now = Date.now();
+    // Rule 1: Enforce minimum 5 seconds delay between eating actions
+    if (!forceFeedback && (now - lastEatTime < 5000)) return;
 
     // 1. Food bar level check: In vanilla Minecraft, normal food cannot be consumed when food === 20
     if (bot.food >= 20) {
@@ -1669,8 +1739,14 @@ function createBotInstance() {
       bot.clearControlStates();
       await bot.equip(bestFood, 'hand');
       await bot.consume();
+      lastEatTime = Date.now();
+
       console.log(`[Auto-Eat] Sukses makan ${bestFood.name}! (Food: ${bot.food}/20, Health: ${bot.health}/20)`);
-      sendChat(`Nyam! Akhirnya makan ${bestFood.name}, makasih ya >///<`);
+      // Anti-Spam: Only send chat feedback if explicitly requested, or at most once every 45s in passive auto-eat!
+      if (forceFeedback || (Date.now() - lastEatChatTime > 45000)) {
+        lastEatChatTime = Date.now();
+        sendChat(`Nyam! Akhirnya makan ${bestFood.name}, makasih ya >///<`);
+      }
 
       if (prevGoal) {
         bot.pathfinder.setGoal(prevGoal, true);
@@ -1684,6 +1760,339 @@ function createBotInstance() {
       isEating = false;
     }
   }
+
+  // Natural Humanoid Door Traversal Engine
+  let lastDoorCheck = 0;
+  function checkAndOpenDoors() {
+    const now = Date.now();
+    if (now - lastDoorCheck < 300 || !bot || !bot.entity) return;
+    lastDoorCheck = now;
+
+    if (!bot.pathfinder || !bot.pathfinder.isMoving()) return;
+
+    // Scan blocks 1-2 blocks in front at foot & torso height
+    const yaw = bot.entity.yaw;
+    const dx = -Math.sin(yaw) * 1.3;
+    const dz = -Math.cos(yaw) * 1.3;
+
+    const checkOffsets = [
+      new Vec3(dx, 0, dz),
+      new Vec3(dx, 1, dz)
+    ];
+
+    for (const off of checkOffsets) {
+      const pos = bot.entity.position.plus(off).floored();
+      const block = bot.blockAt(pos);
+      if (!block || !block.name) continue;
+      const n = block.name;
+      if ((n.includes('_door') && !n.includes('iron_door')) || n.includes('_fence_gate')) {
+        if (block._properties && block._properties.open === false) {
+          bot.activateBlock(block).catch(() => {});
+          break;
+        }
+      }
+    }
+  }
+
+  // Anti-Suffocation Reflex Engine
+  let lastSuffocationCheck = 0;
+  async function checkSuffocation() {
+    const now = Date.now();
+    if (now - lastSuffocationCheck < 400 || !bot || !bot.entity) return;
+    lastSuffocationCheck = now;
+
+    const eyePos = bot.entity.position.offset(0, 1.62, 0).floored();
+    const headBlock = bot.blockAt(eyePos);
+    if (!headBlock || !headBlock.name) return;
+
+    const n = headBlock.name;
+    const isPassable = n === 'air' || n === 'cave_air' || n.includes('water') || n.includes('door') ||
+                       n.includes('sign') || n.includes('banner') || n.includes('torch') || n.includes('carpet');
+
+    if (!isPassable && headBlock.boundingBox === 'block' && headBlock.shapes && headBlock.shapes.length > 0) {
+      console.warn(`[Anti-Suffocation] Kepala terjepit ${n} di Y=${Math.round(eyePos.y)}! Melakukan evakuasi darurat...`);
+
+      // 1. Physical escape: jump & retreat backward
+      bot.setControlState('jump', true);
+      bot.setControlState('back', true);
+      setTimeout(() => {
+        if (bot) {
+          bot.setControlState('jump', false);
+          bot.setControlState('back', false);
+        }
+      }, 350);
+
+      // 2. Emergency dig: break suffocating gravel/sand block immediately
+      const shovel = bot.inventory.items().find(i => i.name.includes('_shovel'));
+      const pickaxe = bot.inventory.items().find(i => i.name.includes('_pickaxe'));
+      const tool = (n.includes('sand') || n.includes('gravel') || n.includes('dirt')) ? (shovel || pickaxe) : (pickaxe || shovel);
+      if (tool) {
+        try { await bot.equip(tool, 'hand'); } catch (e) {}
+      }
+
+      try {
+        await bot.dig(headBlock);
+        sendChat(`Uhuk! Hampir aja kecekek ${n}! Untung bisa ku gali >///<`);
+      } catch (e) {}
+    }
+  }
+
+  // Handle Chest Access & Item Storage Engine
+  async function manageChest(caller, subAction = 'list', itemQuery = null, amountStr = null) {
+    if (!bot || !bot.entity) return;
+    const chestBlock = bot.findBlock({
+      matching: (b) => {
+        if (!b || !b.name) return false;
+        return b.name.includes('chest') || b.name.includes('barrel') || b.name.includes('shulker_box');
+      },
+      maxDistance: 6
+    });
+
+    if (!chestBlock) {
+      sendChat(`Nggak nemu chest atau barrel dalam jarak 6 blok! Bawa aku lebih dekat dong >///<`);
+      return;
+    }
+
+    try {
+      sendChat(`Membuka ${chestBlock.name}... Tunggu sebentar ya! >///<`);
+      const container = await bot.openContainer(chestBlock);
+      const containerItems = container.containerItems();
+
+      if (subAction === 'list') {
+        if (containerItems.length === 0) {
+          sendChat(`Isi ${chestBlock.name} kosong melompong tau! >///<`);
+        } else {
+          const summary = containerItems.slice(0, 6).map(i => `${i.count}x ${i.name}`).join(', ');
+          sendChat(`Isi ${chestBlock.name}: ${summary}${containerItems.length > 6 ? '... dsb' : ''} >///<`);
+        }
+        await sleep(300);
+        container.close();
+        return;
+      }
+
+      if (subAction === 'deposit') {
+        let depositCount = parseInt(amountStr, 10);
+        let deposited = 0;
+
+        if (itemQuery) {
+          const match = bot.inventory.items().filter(i => i.name.toLowerCase().includes(itemQuery.toLowerCase()));
+          if (match.length === 0) {
+            sendChat(`Aku nggak punya ${itemQuery} di tasku buat disimpan! >///<`);
+            container.close();
+            return;
+          }
+          for (const it of match) {
+            const qty = isNaN(depositCount) ? it.count : Math.min(it.count, depositCount - deposited);
+            if (qty <= 0) break;
+            try {
+              await container.deposit(it.type, null, qty);
+              deposited += qty;
+              await sleep(150);
+            } catch (e) {}
+          }
+          sendChat(`Udah ku simpan ${deposited}x ${itemQuery} ke dalam ${chestBlock.name}! >///<`);
+        } else {
+          // Bulk deposit: ores, raw minerals, and building blocks to clear bag
+          const junk = bot.inventory.items().filter(i => {
+            const n = i.name.toLowerCase();
+            return n.includes('ore') || n.includes('raw_') || n.includes('cobble') ||
+                   n.includes('dirt') || n.includes('granite') || n.includes('diorite') ||
+                   n.includes('andesite') || n.includes('tuff') || n.includes('deepslate');
+          });
+          for (const it of junk) {
+            try {
+              await container.deposit(it.type, null, it.count);
+              deposited += it.count;
+              await sleep(120);
+            } catch (e) {}
+          }
+          sendChat(`Udah ku simpan ${deposited} blok hasil tambang ke dalam ${chestBlock.name}! Tas jadi lega deh >///<`);
+        }
+        await sleep(300);
+        container.close();
+        return;
+      }
+
+      if (subAction === 'withdraw') {
+        if (!itemQuery) {
+          sendChat(`Mau ambil apa dari chest? Contoh: !chest withdraw iron 5 >///<`);
+          container.close();
+          return;
+        }
+        let takeCount = parseInt(amountStr, 10);
+        if (isNaN(takeCount) || takeCount <= 0) takeCount = 1;
+
+        const match = containerItems.filter(i => i.name.toLowerCase().includes(itemQuery.toLowerCase()));
+        if (match.length === 0) {
+          sendChat(`Di dalam ${chestBlock.name} nggak ada ${itemQuery}! >///<`);
+          container.close();
+          return;
+        }
+
+        let taken = 0;
+        for (const it of match) {
+          const qty = Math.min(it.count, takeCount - taken);
+          if (qty <= 0) break;
+          try {
+            await container.withdraw(it.type, null, qty);
+            taken += qty;
+            await sleep(150);
+          } catch (e) {}
+        }
+        sendChat(`Nih udah ku ambil ${taken}x ${match[0].name} dari chest! >///<`);
+        await sleep(300);
+        container.close();
+        return;
+      }
+
+      container.close();
+    } catch (err) {
+      console.warn('[Chest Error]', err.message);
+      sendChat(`Gagal akses chest: ${err.message}`);
+    }
+  }
+
+  // Handle Dynamic Crafting Engine
+  async function craftItem(caller, itemQuery, countStr = '1') {
+    if (!bot || !bot.inventory) return;
+    if (!itemQuery) {
+      sendChat(`Mau bikin apa? Contoh: !craft iron_pickaxe atau !craft torch 16 >///<`);
+      return;
+    }
+
+    const count = parseInt(countStr, 10) || 1;
+    const cleanQuery = itemQuery.toLowerCase().replace(/\s+/g, '_');
+
+    // 1. Resolve item ID from mcData
+    const itemData = mcData.itemsByName[cleanQuery] ||
+                     Object.values(mcData.itemsByName).find(i => i.name.toLowerCase().includes(cleanQuery));
+
+    if (!itemData) {
+      sendChat(`Aku nggak tahu barang apa itu "${itemQuery}"... Coba nama Inggrisnya ya! >///<`);
+      return;
+    }
+
+    // 2. Scan for Crafting Table within 6 blocks
+    const craftingTable = bot.findBlock({
+      matching: (b) => b && b.name === 'crafting_table',
+      maxDistance: 6
+    });
+
+    // 3. Check recipes
+    const recipes = bot.recipesFor(itemData.id, null, count, craftingTable);
+
+    if (recipes.length === 0) {
+      const allRecipes = bot.recipesAll(itemData.id, null, craftingTable);
+      if (allRecipes.length === 0) {
+        if (!craftingTable) {
+          sendChat(`Nggak bisa bikin ${itemData.name}! Butuh Crafting Table di dekatku, taruh crafting table dong >///<`);
+        } else {
+          sendChat(`Nggak ada resep crafting untuk ${itemData.name}! >///<`);
+        }
+      } else {
+        sendChat(`Bahanku kurang buat bikin ${count}x ${itemData.name}! Cek resep dan bagi bahannya dulu dong >///<`);
+      }
+      return;
+    }
+
+    const recipe = recipes[0];
+    try {
+      if (recipe.requiresTable && craftingTable) {
+        if (bot.entity.position.distanceTo(craftingTable.position) > 3.5) {
+          const { GoalNear } = require('mineflayer-pathfinder').goals;
+          bot.pathfinder.setGoal(new GoalNear(craftingTable.position.x, craftingTable.position.y, craftingTable.position.z, 2));
+          let wait = 0;
+          while (bot.entity.position.distanceTo(craftingTable.position) > 3.2 && wait < 3000) {
+            await sleep(200);
+            wait += 200;
+          }
+          bot.pathfinder.setGoal(null);
+        }
+      }
+
+      sendChat(`Merakit ${count}x ${itemData.name}... Tunggu sebentar ya! >///<`);
+      await bot.craft(recipe, count, craftingTable);
+      sendChat(`Selesai! Berhasil bikin ${count}x ${itemData.name}! B-Bukan karena kamu yang suruh ya >///<`);
+    } catch (err) {
+      console.warn('[Craft Error]', err.message);
+      sendChat(`Gagal crafting ${itemData.name}: ${err.message}`);
+    }
+  }
+
+  // Handle Bed & Sleep System
+  async function goToBedAndSleep(caller) {
+    if (!bot || !bot.entity) return;
+    if (bot.isSleeping) {
+      sendChat(`Aku kan udah di kasur lagi tidur, Nat! Jangan ganggu dong >///<`);
+      return;
+    }
+
+    const { timeOfDay } = getMinecraftDay();
+    const isNight = timeOfDay >= 12541 && timeOfDay <= 23458;
+    const isThunder = bot.isRaining && (bot.thunderState > 0);
+
+    if (!isNight && !isThunder) {
+      sendChat(`Masih siang bolong (Tick: ${timeOfDay}), belum bisa tidur! Jangan males, ayo kerja dulu! >///<`);
+      return;
+    }
+
+    // Find nearest bed within 16 blocks
+    const bedBlock = bot.findBlock({
+      matching: (b) => {
+        if (!b || !b.name) return false;
+        return b.name.endsWith('_bed') || b.name === 'bed';
+      },
+      maxDistance: 16
+    });
+
+    if (!bedBlock) {
+      sendChat(`Nggak nemu kasur di dekat sini (radius 16 blok)! Taruh kasur dulu dong Nat >///<`);
+      return;
+    }
+
+    sendChat(`Menuju ke kasur di X:${bedBlock.position.x} Z:${bedBlock.position.z}... Hoam >///<`);
+
+    const { GoalNear } = require('mineflayer-pathfinder').goals;
+    bot.pathfinder.setGoal(new GoalNear(bedBlock.position.x, bedBlock.position.y, bedBlock.position.z, 1.8));
+
+    let waited = 0;
+    while (bot.entity.position.distanceTo(bedBlock.position) > 2.0 && waited < 5000) {
+      await sleep(250);
+      waited += 250;
+    }
+    bot.pathfinder.setGoal(null);
+
+    try {
+      await bot.sleep(bedBlock);
+      sendChat(`Hmph, ya udah aku temenin tidur... Jangan ngorok ya Nat! Nite nite~ >///<`);
+    } catch (err) {
+      console.warn('[Sleep Error]', err.message);
+      if (err.message.includes('monsters')) {
+        sendChat(`Ada monster di dekat kasur! Nggak bisa tidur, basmi monsternya dulu! >///<`);
+      } else if (err.message.includes('occupied')) {
+        sendChat(`Kasurnya udah ditempatin orang lain! Cari kasur kosong dong >///<`);
+      } else {
+        sendChat(`Gagal tidur: ${err.message}`);
+      }
+    }
+  }
+
+  async function wakeUp(caller) {
+    if (!bot.isSleeping) {
+      sendChat(`Aku kan nggak lagi tidur, Nat! >///<`);
+      return;
+    }
+    try {
+      await bot.wake();
+      sendChat(`Hoam... Udah bangun nih! Ada apa manggil-manggil? >///<`);
+    } catch (err) {
+      sendChat(`Gagal bangun: ${err.message}`);
+    }
+  }
+
+  bot.on('wake', () => {
+    sendChat(`Hoam... Selamat pagi dunia! Udah bangun nih, seger banget tidurnya >///<`);
+  });
 
   // 3D Terrain & Build Planning Scanner
   function executeAreaScan(caller, radius) {
