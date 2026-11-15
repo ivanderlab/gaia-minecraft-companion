@@ -40,7 +40,7 @@ let config = {
   scanRadius: 10,
   llmEndpoint: process.env.LLM_ENDPOINT || "https://api.nusagate.com/v1",
   llmApiKey: process.env.LLM_API_KEY || "",
-  llmModel: "qwen3.8-flash"
+  llmModel: "deepseek-v4.1-flash"
 };
 
 try {
@@ -328,15 +328,18 @@ function createBotInstance() {
   let guardInterval = null;
   let isAimingBow = false;
   let isEating = false;
+  let isShieldBlocking = false;
+  let shieldBlockTimer = null;
+  let lastIdleLookTime = 0;
 
   // Master Job Terminator: Stop whatever the bot is currently doing
-  function stopAllJobs(caller, notify = true) {
+  function stopAllJobs(caller, notify = true, silent = false) {
     isMining = false;
     isHarvesting = false;
     isChopping = false;
 
-    if (isFarmAfk) toggleFarmAfk(false);
-    if (isGuarding) toggleGuardMode(false);
+    if (isFarmAfk) toggleFarmAfk(false, true);
+    if (isGuarding) toggleGuardMode(false, true);
 
     if (bot.pathfinder) {
       bot.pathfinder.setGoal(null);
@@ -351,7 +354,7 @@ function createBotInstance() {
     }
 
     console.log(`[Job Control] Semua pekerjaan dihentikan oleh @${caller || 'system'}`);
-    if (notify) {
+    if (notify && !silent) {
       sendChat(`Hmph, ya udah semua kerjaanku ku stop! Sekarang aku standby diem di sini, Nat! >///<`);
     }
   }
@@ -372,18 +375,27 @@ function createBotInstance() {
       defaultMove.allowParkour = true; // Enables natural 1-block gap jumps
       defaultMove.allowSprinting = true; // Natural movement rhythm
       defaultMove.liquidCost = 1.5;
-      defaultMove.heuristicCost = 1.1; // Smooth human-like A* trajectory
+      defaultMove.heuristicCost = 1.0; // Smooth human-like A* trajectory
+      defaultMove.maxDropDown = 3;
+      defaultMove.allow1by1towers = false;
       bot.pathfinder.setMovements(defaultMove);
     } catch (err) {
       console.warn('[Gaia] Pathfinder init note:', err.message);
     }
 
-    // Auto-Equip best armor whenever inventory updates
+    // Auto-Equip best armor & off-hand whenever inventory updates
     if (bot.inventory) {
       bot.inventory.on('updateSlot', () => {
         autoEquipBestArmor();
       });
+      // Initial equip on spawn
+      autoEquipBestArmor();
     }
+
+    // Requirement 6: Guard Mode is active by default on spawn!
+    setTimeout(() => {
+      toggleGuardMode(true, true);
+    }, 1500);
 
     // Modern Minecraft 26.x / 1.21.2+ tick_end synchronization & Water Swimming
     bot.on('physicsTick', () => {
@@ -412,14 +424,35 @@ function createBotInstance() {
         checkAndOpenDoors();
         checkSuffocation();
       } catch (e) {}
+
+      // Requirement 11: Active Shield Defense Loop
+      try {
+        updateShieldDefense();
+      } catch (e) {}
+
+      // Requirement 10: Natural Idle Glance / Head Movement Loop
+      try {
+        updateNaturalIdleLook();
+      } catch (e) {}
     });
 
     // Start Module 4: Heartbeat & Autonomous Desires Loop
     scheduleHeartbeat();
 
-    // Damage source tracker for Enderman / Neutral Mob Agro detection
+    // Damage source tracker & emergency shield reflex
     bot.on('entityHurt', (entity) => {
       if (entity === bot.entity) {
+        // Emergency shield block on taking damage
+        const offhand = bot.inventory?.slots?.[45];
+        if (offhand && offhand.name === 'shield' && !isAimingBow) {
+          try {
+            bot.activateItem(true);
+            setTimeout(() => {
+              try { bot.deactivateItem(); } catch (e) {}
+            }, 800);
+          } catch (e) {}
+        }
+
         const attacker = bot.nearestEntity(e => {
           if (!e || e === bot.entity) return false;
           return e.position.distanceTo(bot.entity.position) <= 5.5;
@@ -660,39 +693,39 @@ function createBotInstance() {
             return;
           }
 
-          // Execute action
+          // Execute action silently so it doesn't double-reply alongside AI
           switch (action) {
-            case 'FOLLOW': followPlayer(username); break;
+            case 'FOLLOW': followPlayer(username, true); break;
             case 'STAY':
             case 'STOP':
             case 'CANCEL':
             case 'ABORT':
-              stopAllJobs(username, true); break;
+              stopAllJobs(username, false, true); break;
             case 'FARM':
-            case 'AFK': toggleFarmAfk(true); break;
+            case 'AFK': toggleFarmAfk(true, true); break;
             case 'SLEEP':
             case 'BED':
             case 'TIDUR':
-              goToBedAndSleep(username);
+              goToBedAndSleep(username, true);
               break;
             case 'WAKE':
             case 'BANGUN':
-              wakeUp(username);
+              wakeUp(username, true);
               break;
             case 'CRAFT': {
               const numMatch = userPrompt.match(/\b(\d+)\b/);
               const count = numMatch ? numMatch[1] : '1';
               const cleaned = userPrompt.replace(/\b(craft|bikin|buat|tolong|kan|dong|lah|\d+)\b/gi, '').trim();
-              craftItem(username, cleaned, count);
+              craftItem(username, cleaned, count, true);
               break;
             }
             case 'CHEST': {
               if (/simpan|taruh|deposit/i.test(userPrompt)) {
-                manageChest(username, 'deposit');
+                manageChest(username, 'deposit', null, null, true);
               } else if (/ambil|withdraw/i.test(userPrompt)) {
-                manageChest(username, 'withdraw', 'iron', '5');
+                manageChest(username, 'withdraw', 'iron', '5', true);
               } else {
-                manageChest(username, 'list');
+                manageChest(username, 'list', null, null, true);
               }
               break;
             }
@@ -708,19 +741,19 @@ function createBotInstance() {
               else if (/stone|batu/i.test(userPrompt)) ore = 'stone';
               const numMatch = userPrompt.match(/\b(\d+)\b/);
               if (numMatch) count = Math.min(parseInt(numMatch[1], 10), 16);
-              mineBlock(username, ore, count);
+              mineBlock(username, ore, count, true);
               break;
             }
-            case 'BOAT': mountNearestBoat(username); break;
+            case 'BOAT': mountNearestBoat(username, true); break;
             case 'EXIT': if (bot.vehicle) bot.dismount(); break;
             case 'EAT':
-            case 'MAKAN': tryEatFood(true); break;
-            case 'SCAN': executeAreaScan(username, 10); break;
-            case 'CHOP': chopWood(username); break;
-            case 'HARVEST': harvestCropsLoop(username); break;
-            case 'DROP': dropSpecificItems(); break;
-            case 'DROPARMOR': dropAllArmorAndGear(username); break;
-            case 'GUARD': toggleGuardMode(true); break;
+            case 'MAKAN': tryEatFood(false); break;
+            case 'SCAN': executeAreaScan(username, 10, true); break;
+            case 'CHOP': chopWood(username, true); break;
+            case 'HARVEST': harvestCropsLoop(username, true); break;
+            case 'DROP': dropSpecificItems(null, null, true); break;
+            case 'DROPARMOR': dropAllArmorAndGear(username, true); break;
+            case 'GUARD': toggleGuardMode(true, true); break;
             case 'TP':
               bot.chat('/tpaccept');
               break;
@@ -731,7 +764,11 @@ function createBotInstance() {
           }
         }
 
-        sendChat(finalReply);
+        if (finalReply) {
+          sendChat(finalReply);
+        } else {
+          sendChat(`I-Iya udah aku lakuin perintahmu, Nat! Jangan rewel ya >///<`);
+        }
       } else {
         // Fallback if LLM hung up
         sendChat(`Hmph! Lagi mikir keras nih, jangan diganggu dulu! >///<`);
@@ -949,11 +986,19 @@ function createBotInstance() {
       const bestF = findBest(ARMOR_PRIORITY.feet);
       if (bestF) await bot.equip(bestF, 'feet');
 
-      // Auto-equip shield to off-hand if empty
+      // Requirement 11: Off-hand equipment priority: #1 Totem of Undying, #2 Shield
       const offhandItem = bot.inventory.slots[45];
-      if (!offhandItem || offhandItem.name === 'air') {
-        const shield = items.find(i => i.name === 'shield');
-        if (shield) await bot.equip(shield, 'off-hand');
+      const totem = items.find(i => i.name === 'totem_of_undying');
+      const shield = items.find(i => i.name === 'shield');
+
+      if (totem) {
+        if (!offhandItem || offhandItem.name !== 'totem_of_undying') {
+          await bot.equip(totem, 'off-hand');
+        }
+      } else if (shield) {
+        if (!offhandItem || offhandItem.name !== 'shield') {
+          await bot.equip(shield, 'off-hand');
+        }
       }
     } catch (e) {
       // Non-fatal
@@ -961,8 +1006,8 @@ function createBotInstance() {
   }
 
   // 2. Drop All Armor & Gear
-  async function dropAllArmorAndGear(caller) {
-    sendChat(`Melepas semua armor dan senjataku... Jangan dirusakin ya! >///<`);
+  async function dropAllArmorAndGear(caller, silent = false) {
+    if (!silent) sendChat(`Melepas semua armor dan senjataku... Jangan dirusakin ya! >///<`);
     const slotsToDrop = [5, 6, 7, 8, 45]; // head, torso, legs, feet, off-hand
     let droppedCount = 0;
 
@@ -978,7 +1023,7 @@ function createBotInstance() {
         }
       }
     }
-    sendChat(`Selesai! ${droppedCount} armor/gear sudah ku lepas ke tanah >///<`);
+    if (!silent) sendChat(`Selesai! ${droppedCount} armor/gear sudah ku lepas ke tanah >///<`);
   }
 
   // 3. Equip Specific Item to Off-Hand
@@ -1172,8 +1217,12 @@ function createBotInstance() {
   }
 
   // Unified Hostile Target Filter (Applies to Guard Mode and AFK Farm)
+  // Requirement 4: Strictly filter out dead mobs (health <= 0 or isAlive === false)
   function isHostileTarget(entity) {
-    if (!entity || !entity.name) return false;
+    if (!entity || !entity.name || !entity.isValid) return false;
+    if (entity.isAlive === false) return false;
+    if (entity.health !== undefined && entity.health <= 0) return false;
+    if (entity.metadata && typeof entity.metadata[6] === 'number' && entity.metadata[6] <= 0) return false;
     if (entity.type === 'player' || entity.username) return false;
     const name = entity.name.toLowerCase();
 
@@ -1228,18 +1277,20 @@ function createBotInstance() {
     return true;
   }
 
-  function toggleGuardMode(enable) {
+  function toggleGuardMode(enable, silent = false) {
     isGuarding = enable;
     if (guardInterval) clearInterval(guardInterval);
 
     if (isGuarding) {
-      if (isFarmAfk) toggleFarmAfk(false);
-      sendChat(`Mode Guard AKTIF! Awas aja monster yang berani mendekat, bakal ku tembak! >///<`);
+      if (isFarmAfk) toggleFarmAfk(false, true);
+      if (!silent) sendChat(`Mode Guard AKTIF! Awas aja monster yang berani mendekat, bakal ku tembak! >///<`);
+      console.log(`[Gaia] Mode Guard AKTIF`);
       guardInterval = setInterval(() => {
         engageHostileNearby();
-      }, 1200);
+      }, 700);
     } else {
-      sendChat(`Mode Guard NONAKTIF. Hmph, capek juga patroli terus! >///<`);
+      if (!silent) sendChat(`Mode Guard NONAKTIF. Hmph, capek juga patroli terus! >///<`);
+      console.log(`[Gaia] Mode Guard NONAKTIF`);
     }
   }
 
@@ -1272,74 +1323,105 @@ function createBotInstance() {
     return false;
   }
 
-  // Meteor / Wurst Ballistic Aim Solver (Discrete parabolic arc)
+  // Requirement 3: High-Precision Intercept Ballistics with Velocity Prediction & Parabolic Drop
+  function calculatePredictedBallisticAim(botEyePos, mob, mobHeight = 1.8) {
+    const rawPos = mob.position.clone();
+    const vel = mob.velocity || new Vec3(0, 0, 0);
+
+    const initialDist = botEyePos.distanceTo(rawPos);
+    // Standard charged arrow speed in Minecraft ~2.60 blocks/tick (~52 m/s)
+    const flightTicks = Math.max(1, initialDist / 2.60);
+
+    // Predict horizontal displacement based on velocity
+    const predX = rawPos.x + (vel.x * flightTicks);
+    const predZ = rawPos.z + (vel.z * flightTicks);
+
+    // Predict vertical coordinate: clamp ground entities so arrows don't clip into dirt
+    let predY = rawPos.y;
+    if (!mob.onGround && Math.abs(vel.y) > 0.05) {
+      predY += (vel.y * flightTicks);
+    }
+
+    // Parabolic drop compensation: 0.5 * g * t^2 = 0.025 * t^2
+    const gravityDrop = 0.025 * flightTicks * flightTicks;
+    const aimY = predY + (mobHeight * 0.55) + gravityDrop;
+
+    return new Vec3(predX, aimY, predZ);
+  }
+
+  // Backward-compatible alias
   function calculateBallisticAim(botEyePos, mobPos, mobHeight = 1.8) {
     const dx = mobPos.x - botEyePos.x;
     const dz = mobPos.z - botEyePos.z;
     const distXZ = Math.sqrt(dx * dx + dz * dz);
-    // Gravity drop compensation for standard 3.0 m/s Minecraft arrow
     const gravityDrop = 0.0028 * distXZ * distXZ;
     const targetY = mobPos.y + (mobHeight * 0.6) + gravityDrop;
     return new Vec3(mobPos.x, targetY, mobPos.z);
   }
 
+  // Requirement 8 & 9: Strict Line-of-Sight & Guard Standby Positioning
   async function engageHostileNearby() {
-    if (!bot || !bot.entity || isHarvesting || isAimingBow || isFarmAfk || isEating) return;
+    if (!bot || !bot.entity || isHarvesting || isAimingBow || isFarmAfk || isEating || bot.isSleeping) return;
 
-    // Filter: Hostile mobs with strict Enderman check, NEVER players!
+    const botEyePos = bot.entity.position.offset(0, 1.6, 0);
+    const bowItem = bot.inventory.items().find(i => i.name.includes('bow') && !i.name.includes('bowl'));
+    const hasArrows = bot.inventory.items().some(i => i.name.includes('arrow'));
+    const hasBow = bowItem && (hasArrows || bowItem.nbt);
+
+    // Max engagement range: Bow up to 22.0 blocks; Melee STRICTLY <= 5.0 blocks!
+    const maxRange = hasBow ? 22.0 : 5.0;
+
+    // Filter target: MUST satisfy Line-of-Sight UPFRONT! Zero "menerawang" through walls/caves!
     const mob = bot.nearestEntity(e => {
       if (!isHostileTarget(e)) return false;
-      return bot.entity.position.distanceTo(e.position) <= 24;
+      const d = bot.entity.position.distanceTo(e.position);
+      if (d > maxRange) return false;
+      const mobEye = e.position.offset(0, (e.height || 1.8) * 0.6, 0);
+      return hasLineOfSight(botEyePos, mobEye);
     });
 
     if (!mob) return;
 
-    const botEyePos = bot.entity.position.offset(0, 1.6, 0);
-    const mobTargetPos = mob.position.offset(0, (mob.height || 1.8) * 0.5, 0);
     const dist = bot.entity.position.distanceTo(mob.position);
-    const bowItem = bot.inventory.items().find(i => i.name.includes('bow') && !i.name.includes('bowl'));
-    const hasArrows = bot.inventory.items().some(i => i.name.includes('arrow'));
 
-    const hasBow = bowItem && (hasArrows || bowItem.nbt);
-    const hasLoS = hasLineOfSight(botEyePos, mobTargetPos);
-
-    // CASE 1: RANGED BOW COMBAT (Bow equipped & distance > 4.5)
-    if (hasBow && dist > 4.5) {
-      if (!hasLoS) {
-        // Obstructed by block! Guard standby: watch direction, do NOT draw bow string!
-        bot.lookAt(mobTargetPos, true).catch(() => {});
-        return;
-      }
-
+    // CASE 1: RANGED BOW COMBAT
+    if (hasBow && dist > 3.5) {
       if (isPlayerInLineOfFire(botEyePos, mob.position)) {
         console.log(`[Auto-Aim] Tembakan ditunda: Teman menghalangi garis tembak ke ${mob.name}`);
         return;
       }
 
       isAimingBow = true;
-
-      // CRITICAL: Temporarily pause pathfinder look-lock so it doesn't snap back to Nat!
-      const prevGoal = bot.pathfinder.goal;
-      bot.pathfinder.setGoal(null);
+      const prevGoal = bot.pathfinder?.goal;
+      if (bot.pathfinder) bot.pathfinder.setGoal(null); // Stay put! Shoot from current position!
 
       try {
         await bot.equip(bowItem, 'hand');
-
-        const initialAim = calculateBallisticAim(botEyePos, mob.position, mob.height);
-        await bot.lookAt(initialAim, true);
+        const initialAim = calculatePredictedBallisticAim(botEyePos, mob, mob.height);
+        await bot.lookAt(initialAim, false);
 
         // Draw bow
         bot.activateItem();
 
-        // Charge bow for 1000ms while continuously tracking mob movement
+        // Charge bow for 1000ms while continuously tracking predicted velocity
         const startCharge = Date.now();
+        let targetDied = false;
         while (Date.now() - startCharge < 1000) {
-          if (mob && mob.isValid) {
-            const liveEye = bot.entity.position.offset(0, 1.6, 0);
-            const liveAim = calculateBallisticAim(liveEye, mob.position, mob.height);
-            bot.lookAt(liveAim, true).catch(() => {});
+          // Requirement 4: Cancel if mob dies during bow draw
+          if (!mob || !mob.isValid || mob.isAlive === false || (mob.health !== undefined && mob.health <= 0)) {
+            targetDied = true;
+            break;
           }
+          const liveEye = bot.entity.position.offset(0, 1.6, 0);
+          const liveAim = calculatePredictedBallisticAim(liveEye, mob, mob.height);
+          bot.lookAt(liveAim, false).catch(() => {});
           await sleep(50);
+        }
+
+        if (targetDied) {
+          console.log(`[Auto-Aim Bow] Target mati saat narik busur, tembakan dibatalkan!`);
+          bot.deactivateItem();
+          return;
         }
 
         // Re-check friendly crossfire right before release
@@ -1348,51 +1430,128 @@ function createBotInstance() {
           console.log('[Auto-Aim] Friendly player melintas di depan busur! Membatalkan tembakan.');
           bot.deactivateItem();
         } else {
-          if (mob && mob.isValid) {
-            const finalAim = calculateBallisticAim(finalEye, mob.position, mob.height);
-            await bot.lookAt(finalAim, true);
+          // Final check: mob still alive?
+          if (!mob || !mob.isValid || mob.isAlive === false || (mob.health !== undefined && mob.health <= 0)) {
+            bot.deactivateItem();
+            return;
           }
+          const finalAim = calculatePredictedBallisticAim(finalEye, mob, mob.height);
+          await bot.lookAt(finalAim, false);
           bot.deactivateItem();
-          console.log(`[Auto-Aim Bow] Tembak ${mob.name} di jarak ${Math.round(dist)} blok!`);
+          console.log(`[Auto-Aim Bow] Tembak ${mob.name} di jarak ${Math.round(dist)} blok (predicted intercept)!`);
         }
       } catch (err) {
         console.warn('[Bow Aim Error]', err.message);
       } finally {
         isAimingBow = false;
-        // Smoothly restore previous pathfinding goal (e.g. continue following Nat)
-        if (prevGoal) {
+        if (prevGoal && bot.pathfinder) {
           bot.pathfinder.setGoal(prevGoal, true);
         }
       }
     } else {
-      // CASE 2: CLOSE COMBAT / MELEE (No bow, or close range <= 4.5)
-      // 1. Equip best melee weapon (Sword first, then Axe)
-      const sword = bot.inventory.items().find(i => i.name.includes('_sword')) ||
-                    bot.inventory.items().find(i => i.name.includes('_axe'));
-      if (sword && (!bot.heldItem || bot.heldItem.name !== sword.name)) {
-        try { await bot.equip(sword, 'hand'); } catch (e) {}
+      // CASE 2: CLOSE COMBAT / MELEE (dist <= 5.0 blocks strictly)
+      const meleeWeapon = bot.inventory.items().find(i => i.name.includes('_sword')) ||
+                          bot.inventory.items().find(i => i.name.includes('_axe'));
+      if (meleeWeapon && (!bot.heldItem || bot.heldItem.name !== meleeWeapon.name)) {
+        try { await bot.equip(meleeWeapon, 'hand'); } catch (e) {}
       }
 
-      // 2. If in melee reach (<= 3.5 blocks) AND has line of sight: strike!
-      if (dist <= 3.5 && hasLoS) {
+      // Check mob is still alive
+      if (!mob || !mob.isValid || mob.isAlive === false || (mob.health !== undefined && mob.health <= 0)) {
+        return;
+      }
+
+      // If within reach (<= 3.5 blocks), attack!
+      if (dist <= 3.5) {
         try {
-          await bot.lookAt(mob.position.offset(0, (mob.height || 1.8) * 0.6, 0), true);
+          await bot.lookAt(mob.position.offset(0, (mob.height || 1.8) * 0.6, 0), false);
           bot.attack(mob);
-          if (mob.name === 'creeper' && dist < 3.2) {
+          if (mob.name === 'creeper' && dist < 3.0) {
             bot.setControlState('back', true);
-            setTimeout(() => bot.setControlState('back', false), 500);
+            setTimeout(() => bot.setControlState('back', false), 450);
           }
         } catch (err) {
           console.warn('[Melee Error]', err.message);
         }
-      } else {
-        // Not in reach or behind block: Pathfind navigate towards mob around walls! (NEVER hit through blocks)
+      } else if (dist <= 5.0) {
+        // Step forward just enough to reach 2.5 blocks, then strike! Never chase past 5 blocks!
         try {
           const { GoalNear } = require('mineflayer-pathfinder').goals;
-          bot.pathfinder.setGoal(new GoalNear(mob.position.x, mob.position.y, mob.position.z, 2), true);
+          bot.pathfinder.setGoal(new GoalNear(mob.position.x, mob.position.y, mob.position.z, 2.5), true);
         } catch (e) {}
       }
     }
+  }
+
+  // Requirement 11: Active Shield Defense Controller
+  function updateShieldDefense() {
+    if (!bot || !bot.entity || isAimingBow || isEating || bot.isSleeping) return;
+    const offhandItem = bot.inventory?.slots?.[45];
+    const hasShield = offhandItem && offhandItem.name === 'shield';
+    if (!hasShield) return;
+
+    const botEyePos = bot.entity.position.offset(0, 1.6, 0);
+
+    // Look for projectile archers or incoming hostile threats
+    const threateningMob = bot.nearestEntity(e => {
+      if (!isHostileTarget(e)) return false;
+      const d = bot.entity.position.distanceTo(e.position);
+      const name = e.name.toLowerCase();
+      const isArcher = ['skeleton', 'stray', 'bogged', 'pillager'].includes(name);
+
+      if (isArcher && d <= 15) {
+        return hasLineOfSight(botEyePos, e.position.offset(0, 1.5, 0));
+      }
+      if (d <= 3.8) {
+        return hasLineOfSight(botEyePos, e.position.offset(0, 1.0, 0));
+      }
+      return false;
+    });
+
+    if (threateningMob) {
+      if (!isShieldBlocking) {
+        isShieldBlocking = true;
+        bot.lookAt(threateningMob.position.offset(0, (threateningMob.height || 1.8) * 0.6, 0), false).catch(() => {});
+        bot.activateItem(true); // Raise off-hand shield
+        if (shieldBlockTimer) clearTimeout(shieldBlockTimer);
+        shieldBlockTimer = setTimeout(() => {
+          if (isShieldBlocking) {
+            isShieldBlocking = false;
+            try { bot.deactivateItem(); } catch (e) {}
+          }
+        }, 1100);
+      }
+    } else if (isShieldBlocking) {
+      isShieldBlocking = false;
+      if (shieldBlockTimer) clearTimeout(shieldBlockTimer);
+      try { bot.deactivateItem(); } catch (e) {}
+    }
+  }
+
+  // Requirement 10: Natural Idle Glance & Head Movement (Vanilla Entity Feel)
+  function updateNaturalIdleLook() {
+    const now = Date.now();
+    if (now - lastIdleLookTime < 4500) return;
+    if (!bot || !bot.entity || isAimingBow || isEating || bot.isSleeping) return;
+    if (bot.pathfinder && bot.pathfinder.isMoving()) return;
+
+    lastIdleLookTime = now + Math.floor(Math.random() * 2500);
+
+    // 1. If Nat or Ijul is nearby (within 5.5 blocks), glance at their head gently
+    const nearbyCommander = bot.nearestEntity(e => {
+      if (!e || e === bot.entity || e.type !== 'player' || !e.username) return false;
+      return isNatOrIjul(e.username) && bot.entity.position.distanceTo(e.position) <= 5.5;
+    });
+
+    if (nearbyCommander) {
+      bot.lookAt(nearbyCommander.position.offset(0, 1.6, 0), false).catch(() => {});
+      return;
+    }
+
+    // 2. Otherwise, gently glance around (natural yaw shift +- 25 deg, pitch +- 8 deg)
+    const deltaYaw = (Math.random() - 0.5) * 0.8;
+    const targetPitch = (Math.random() - 0.5) * 0.2;
+    bot.look(bot.entity.yaw + deltaYaw, targetPitch, false).catch(() => {});
   }
 
   // ==========================================
@@ -1608,7 +1767,7 @@ function createBotInstance() {
   }
 
   // Handle Boat Mounting
-  function mountNearestBoat(caller) {
+  function mountNearestBoat(caller, silent = false) {
     const filter = (e) => {
       if (!e || !e.name) return false;
       const n = e.name.toLowerCase();
@@ -1617,15 +1776,15 @@ function createBotInstance() {
 
     const boat = bot.nearestEntity(filter);
     if (!boat) {
-      sendChat(`Nggak nemu perahu di radius 5 blok! Taruh perahu deketan dulu dong >///<`);
+      if (!silent) sendChat(`Nggak nemu perahu di radius 5 blok! Taruh perahu deketan dulu dong >///<`);
       return;
     }
 
     try {
       bot.mount(boat);
-      sendChat(`Hmph! Sudah naik perahu nih. Cepetan dayung, jangan lelet ya! >///<`);
+      if (!silent) sendChat(`Hmph! Sudah naik perahu nih. Cepetan dayung, jangan lelet ya! >///<`);
     } catch (err) {
-      sendChat(`Gagal naik perahu: ${err.message}`);
+      if (!silent) sendChat(`Gagal naik perahu: ${err.message}`);
     }
   }
 
@@ -1639,25 +1798,46 @@ function createBotInstance() {
   }
 
   // Handle Follow Player
-  function followPlayer(caller) {
+  function followPlayer(caller, silent = false) {
     const player = bot.players[caller];
     if (!player || !player.entity) {
-      sendChat(`Kamu kejauhan atau belum kelihatan di radar render-ku! Deketan dulu dong >///<`);
+      if (!silent) sendChat(`Kamu kejauhan atau belum kelihatan di radar render-ku! Deketan dulu dong >///<`);
       return;
     }
-    bot.pathfinder.setGoal(new GoalFollow(player.entity, 2), true);
-    sendChat(`I-Iya iya aku ikutin di belakang... Bukan karena pengen deket ya! >///<`);
+    bot.pathfinder.setGoal(new GoalFollow(player.entity, 3), true);
+    if (!silent) sendChat(`I-Iya iya aku ikutin di belakang... Bukan karena pengen deket ya! >///<`);
   }
 
-  // Handle Inventory Report
+  // Handle Inventory Report (Requirement 5: full aggregation without truncation)
   function reportInventory() {
     const items = bot.inventory.items();
     if (items.length === 0) {
       sendChat(`Tasku kosong melompong tau! Hmph! >///<`);
       return;
     }
-    const summary = items.slice(0, 5).map(i => `${i.name} (${i.count})`).join(', ');
-    sendChat(`Isi tasku: ${summary}${items.length > 5 ? '... dsb' : ''}. Jangan asal titip sampah ya! >///<`);
+    const grouped = {};
+    for (const it of items) {
+      if (!it || !it.name) continue;
+      grouped[it.name] = (grouped[it.name] || 0) + it.count;
+    }
+
+    const formatted = [];
+    for (const [name, total] of Object.entries(grouped)) {
+      if (total >= 64) {
+        const stacks = Math.floor(total / 64);
+        const rem = total % 64;
+        if (rem > 0) {
+          formatted.push(`${name} (${stacks} x 64 + ${rem})`);
+        } else {
+          formatted.push(`${name} (${stacks} x 64)`);
+        }
+      } else {
+        formatted.push(`${name} (${total})`);
+      }
+    }
+
+    const fullMsg = `Isi tasku (${items.length} slot): ` + formatted.join(', ') + `. Jangan asal titip sampah ya! >///<`;
+    sendChat(fullMsg);
   }
 
   // Handle Auto-Eat & Modern Async Consumption Engine
@@ -1838,23 +2018,39 @@ function createBotInstance() {
   }
 
   // Handle Chest Access & Item Storage Engine
-  async function manageChest(caller, subAction = 'list', itemQuery = null, amountStr = null) {
+  // Requirement 7: Fix chest check follow bug (cancel follow and pathfind to chest)
+  async function manageChest(caller, subAction = 'list', itemQuery = null, amountStr = null, silent = false) {
     if (!bot || !bot.entity) return;
+
+    // Critical fix: Cancel follow goal so bot stops chasing player and goes to chest!
+    if (bot.pathfinder) {
+      bot.pathfinder.setGoal(null);
+    }
+
     const chestBlock = bot.findBlock({
       matching: (b) => {
         if (!b || !b.name) return false;
         return b.name.includes('chest') || b.name.includes('barrel') || b.name.includes('shulker_box');
       },
-      maxDistance: 6
+      maxDistance: 12
     });
 
     if (!chestBlock) {
-      sendChat(`Nggak nemu chest atau barrel dalam jarak 6 blok! Bawa aku lebih dekat dong >///<`);
+      if (!silent) sendChat(`Nggak nemu chest atau barrel dalam jarak 12 blok! Bawa aku lebih dekat dong >///<`);
       return;
     }
 
     try {
-      sendChat(`Membuka ${chestBlock.name}... Tunggu sebentar ya! >///<`);
+      const dist = bot.entity.position.distanceTo(chestBlock.position);
+      if (dist > 2.8) {
+        if (!silent) sendChat(`Menuju ke ${chestBlock.name} terdekat... Tunggu sebentar ya! >///<`);
+        const { GoalNear } = require('mineflayer-pathfinder').goals;
+        try {
+          await bot.pathfinder.goto(new GoalNear(chestBlock.position.x, chestBlock.position.y, chestBlock.position.z, 2));
+        } catch (e) {}
+      }
+
+      await bot.lookAt(chestBlock.position.offset(0.5, 0.5, 0.5), false);
       const container = await bot.openContainer(chestBlock);
       const containerItems = container.containerItems();
 
@@ -1862,8 +2058,19 @@ function createBotInstance() {
         if (containerItems.length === 0) {
           sendChat(`Isi ${chestBlock.name} kosong melompong tau! >///<`);
         } else {
-          const summary = containerItems.slice(0, 6).map(i => `${i.count}x ${i.name}`).join(', ');
-          sendChat(`Isi ${chestBlock.name}: ${summary}${containerItems.length > 6 ? '... dsb' : ''} >///<`);
+          const grouped = {};
+          for (const it of containerItems) {
+            grouped[it.name] = (grouped[it.name] || 0) + it.count;
+          }
+          const summary = Object.entries(grouped).map(([name, count]) => {
+            if (count >= 64) {
+              const st = Math.floor(count / 64);
+              const rm = count % 64;
+              return rm > 0 ? `${name} (${st}x64+${rm})` : `${name} (${st}x64)`;
+            }
+            return `${name} (${count})`;
+          }).join(', ');
+          sendChat(`Isi ${chestBlock.name}: ${summary} >///<`);
         }
         await sleep(300);
         container.close();
@@ -1877,7 +2084,7 @@ function createBotInstance() {
         if (itemQuery) {
           const match = bot.inventory.items().filter(i => i.name.toLowerCase().includes(itemQuery.toLowerCase()));
           if (match.length === 0) {
-            sendChat(`Aku nggak punya ${itemQuery} di tasku buat disimpan! >///<`);
+            if (!silent) sendChat(`Aku nggak punya ${itemQuery} di tasku buat disimpan! >///<`);
             container.close();
             return;
           }
@@ -1890,7 +2097,7 @@ function createBotInstance() {
               await sleep(150);
             } catch (e) {}
           }
-          sendChat(`Udah ku simpan ${deposited}x ${itemQuery} ke dalam ${chestBlock.name}! >///<`);
+          if (!silent) sendChat(`Udah ku simpan ${deposited}x ${itemQuery} ke dalam ${chestBlock.name}! >///<`);
         } else {
           // Bulk deposit: ores, raw minerals, and building blocks to clear bag
           const junk = bot.inventory.items().filter(i => {
@@ -1906,7 +2113,7 @@ function createBotInstance() {
               await sleep(120);
             } catch (e) {}
           }
-          sendChat(`Udah ku simpan ${deposited} blok hasil tambang ke dalam ${chestBlock.name}! Tas jadi lega deh >///<`);
+          if (!silent) sendChat(`Udah ku simpan ${deposited} blok hasil tambang ke dalam ${chestBlock.name}! Tas jadi lega deh >///<`);
         }
         await sleep(300);
         container.close();
@@ -1915,7 +2122,7 @@ function createBotInstance() {
 
       if (subAction === 'withdraw') {
         if (!itemQuery) {
-          sendChat(`Mau ambil apa dari chest? Contoh: !chest withdraw iron 5 >///<`);
+          if (!silent) sendChat(`Mau ambil apa dari chest? Contoh: !chest withdraw iron 5 >///<`);
           container.close();
           return;
         }
@@ -1924,7 +2131,7 @@ function createBotInstance() {
 
         const match = containerItems.filter(i => i.name.toLowerCase().includes(itemQuery.toLowerCase()));
         if (match.length === 0) {
-          sendChat(`Di dalam ${chestBlock.name} nggak ada ${itemQuery}! >///<`);
+          if (!silent) sendChat(`Di dalam ${chestBlock.name} nggak ada ${itemQuery}! >///<`);
           container.close();
           return;
         }
@@ -1939,7 +2146,7 @@ function createBotInstance() {
             await sleep(150);
           } catch (e) {}
         }
-        sendChat(`Nih udah ku ambil ${taken}x ${match[0].name} dari chest! >///<`);
+        if (!silent) sendChat(`Nih udah ku ambil ${taken}x ${match[0].name} dari chest! >///<`);
         await sleep(300);
         container.close();
         return;
@@ -1948,15 +2155,15 @@ function createBotInstance() {
       container.close();
     } catch (err) {
       console.warn('[Chest Error]', err.message);
-      sendChat(`Gagal akses chest: ${err.message}`);
+      if (!silent) sendChat(`Gagal akses chest: ${err.message}`);
     }
   }
 
   // Handle Dynamic Crafting Engine
-  async function craftItem(caller, itemQuery, countStr = '1') {
+  async function craftItem(caller, itemQuery, countStr = '1', silent = false) {
     if (!bot || !bot.inventory) return;
     if (!itemQuery) {
-      sendChat(`Mau bikin apa? Contoh: !craft iron_pickaxe atau !craft torch 16 >///<`);
+      if (!silent) sendChat(`Mau bikin apa? Contoh: !craft iron_pickaxe atau !craft torch 16 >///<`);
       return;
     }
 
@@ -1968,7 +2175,7 @@ function createBotInstance() {
                      Object.values(mcData.itemsByName).find(i => i.name.toLowerCase().includes(cleanQuery));
 
     if (!itemData) {
-      sendChat(`Aku nggak tahu barang apa itu "${itemQuery}"... Coba nama Inggrisnya ya! >///<`);
+      if (!silent) sendChat(`Aku nggak tahu barang apa itu "${itemQuery}"... Coba nama Inggrisnya ya! >///<`);
       return;
     }
 
@@ -1985,12 +2192,12 @@ function createBotInstance() {
       const allRecipes = bot.recipesAll(itemData.id, null, craftingTable);
       if (allRecipes.length === 0) {
         if (!craftingTable) {
-          sendChat(`Nggak bisa bikin ${itemData.name}! Butuh Crafting Table di dekatku, taruh crafting table dong >///<`);
+          if (!silent) sendChat(`Nggak bisa bikin ${itemData.name}! Butuh Crafting Table di dekatku, taruh crafting table dong >///<`);
         } else {
-          sendChat(`Nggak ada resep crafting untuk ${itemData.name}! >///<`);
+          if (!silent) sendChat(`Nggak ada resep crafting untuk ${itemData.name}! >///<`);
         }
       } else {
-        sendChat(`Bahanku kurang buat bikin ${count}x ${itemData.name}! Cek resep dan bagi bahannya dulu dong >///<`);
+        if (!silent) sendChat(`Bahanku kurang buat bikin ${count}x ${itemData.name}! Cek resep dan bagi bahannya dulu dong >///<`);
       }
       return;
     }
@@ -2010,20 +2217,20 @@ function createBotInstance() {
         }
       }
 
-      sendChat(`Merakit ${count}x ${itemData.name}... Tunggu sebentar ya! >///<`);
+      if (!silent) sendChat(`Merakit ${count}x ${itemData.name}... Tunggu sebentar ya! >///<`);
       await bot.craft(recipe, count, craftingTable);
-      sendChat(`Selesai! Berhasil bikin ${count}x ${itemData.name}! B-Bukan karena kamu yang suruh ya >///<`);
+      if (!silent) sendChat(`Selesai! Berhasil bikin ${count}x ${itemData.name}! B-Bukan karena kamu yang suruh ya >///<`);
     } catch (err) {
       console.warn('[Craft Error]', err.message);
-      sendChat(`Gagal crafting ${itemData.name}: ${err.message}`);
+      if (!silent) sendChat(`Gagal crafting ${itemData.name}: ${err.message}`);
     }
   }
 
   // Handle Bed & Sleep System
-  async function goToBedAndSleep(caller) {
+  async function goToBedAndSleep(caller, silent = false) {
     if (!bot || !bot.entity) return;
     if (bot.isSleeping) {
-      sendChat(`Aku kan udah di kasur lagi tidur, Nat! Jangan ganggu dong >///<`);
+      if (!silent) sendChat(`Aku kan udah di kasur lagi tidur, Nat! Jangan ganggu dong >///<`);
       return;
     }
 
@@ -2032,7 +2239,7 @@ function createBotInstance() {
     const isThunder = bot.isRaining && (bot.thunderState > 0);
 
     if (!isNight && !isThunder) {
-      sendChat(`Masih siang bolong (Tick: ${timeOfDay}), belum bisa tidur! Jangan males, ayo kerja dulu! >///<`);
+      if (!silent) sendChat(`Masih siang bolong (Tick: ${timeOfDay}), belum bisa tidur! Jangan males, ayo kerja dulu! >///<`);
       return;
     }
 
@@ -2046,11 +2253,11 @@ function createBotInstance() {
     });
 
     if (!bedBlock) {
-      sendChat(`Nggak nemu kasur di dekat sini (radius 16 blok)! Taruh kasur dulu dong Nat >///<`);
+      if (!silent) sendChat(`Nggak nemu kasur di dekat sini (radius 16 blok)! Taruh kasur dulu dong Nat >///<`);
       return;
     }
 
-    sendChat(`Menuju ke kasur di X:${bedBlock.position.x} Z:${bedBlock.position.z}... Hoam >///<`);
+    if (!silent) sendChat(`Menuju ke kasur di X:${bedBlock.position.x} Z:${bedBlock.position.z}... Hoam >///<`);
 
     const { GoalNear } = require('mineflayer-pathfinder').goals;
     bot.pathfinder.setGoal(new GoalNear(bedBlock.position.x, bedBlock.position.y, bedBlock.position.z, 1.8));
@@ -2064,29 +2271,31 @@ function createBotInstance() {
 
     try {
       await bot.sleep(bedBlock);
-      sendChat(`Hmph, ya udah aku temenin tidur... Jangan ngorok ya Nat! Nite nite~ >///<`);
+      if (!silent) sendChat(`Hmph, ya udah aku temenin tidur... Jangan ngorok ya Nat! Nite nite~ >///<`);
     } catch (err) {
       console.warn('[Sleep Error]', err.message);
-      if (err.message.includes('monsters')) {
-        sendChat(`Ada monster di dekat kasur! Nggak bisa tidur, basmi monsternya dulu! >///<`);
-      } else if (err.message.includes('occupied')) {
-        sendChat(`Kasurnya udah ditempatin orang lain! Cari kasur kosong dong >///<`);
-      } else {
-        sendChat(`Gagal tidur: ${err.message}`);
+      if (!silent) {
+        if (err.message.includes('monsters')) {
+          sendChat(`Ada monster di dekat kasur! Nggak bisa tidur, basmi monsternya dulu! >///<`);
+        } else if (err.message.includes('occupied')) {
+          sendChat(`Kasurnya udah ditempatin orang lain! Cari kasur kosong dong >///<`);
+        } else {
+          sendChat(`Gagal tidur: ${err.message}`);
+        }
       }
     }
   }
 
-  async function wakeUp(caller) {
+  async function wakeUp(caller, silent = false) {
     if (!bot.isSleeping) {
-      sendChat(`Aku kan nggak lagi tidur, Nat! >///<`);
+      if (!silent) sendChat(`Aku kan nggak lagi tidur, Nat! >///<`);
       return;
     }
     try {
       await bot.wake();
-      sendChat(`Hoam... Udah bangun nih! Ada apa manggil-manggil? >///<`);
+      if (!silent) sendChat(`Hoam... Udah bangun nih! Ada apa manggil-manggil? >///<`);
     } catch (err) {
-      sendChat(`Gagal bangun: ${err.message}`);
+      if (!silent) sendChat(`Gagal bangun: ${err.message}`);
     }
   }
 

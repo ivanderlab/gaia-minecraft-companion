@@ -34,11 +34,13 @@
 - **Ring-Buffer Chat Memory**: Mengingat riwayat obrolan terkini pemain dari RAM tanpa memberatkan I/O disk.
 - **Strict Role-Playing**: Berkarakter Tsundere gengsi tinggi, setia menemani Nat (`JawirHub` / `EpanGanteng`) dan Ijul (`SixManey`), serta menolak perintah fisik dari pemain asing di server.
 
-### 2. 🏹 Ballistic Auto-Aim & Combat Engine
-- **Parabolic Trajectory Solver**: Menghitung gravitasi panah ($Y_{aim} = Y_{target} + (H \times 0.6) + 0.0028 \times D^2$) terinspirasi dari arsitektur client PvP Wurst/Meteor.
-- **Raycast Line-of-Sight (LoS)**: Hanya menarik busur jika pandangan ke monster bersih tanpa terhalang dinding/tanah. Jika terhalang, Gaia bertahan dalam posisi siaga (*Guard Standby*).
-- **Crossfire Safety (Anti-Friendly Fire)**: Membatalkan tembakan secara instan jika kawan melintas di kerucut tembakan busur.
-- **Modern 26.x Physics Synchronization**: Dilengkapi injeksi paket `tick_end` pada setiap physics tick agar kebal dari kick `invalid_player_movement` di server Fabric modern.
+### 2. 🏹 Predictive Ballistics & Tactical Guard Engine
+- **Velocity Intercept Lead & Parabolic Arc**: Menghitung vektor kecepatan mob ($v_{\text{ticks}}$) dan waktu tempuh panah ($t_{\text{flight}} = \text{dist} / 2.60$) untuk menembak ke posisi masa depan target, dikombinasikan dengan kompensasi gravitasi ($0.025 \times t^2$).
+- **Strict Line-of-Sight (Anti-Menerawang)**: Raycast presisi tinggi menyaring target sejak awal. Mob di dalam goa atau di balik dinding tebal tidak akan pernah ditarget.
+- **Dead Mob Filter (Zero Corpse Firing)**: Secara instan membatalkan tarikan busur jika monster mati saat busur ditarik (akibat api matahari, lava, atau serangan kawan).
+- **Tactical Standby Positioning**: Saat memegang busur, Gaia menembak dari posisi standby tanpa lari mendekati musuh; saat melee, Gaia hanya menyergap musuh yang mendekat $\le 5.0$ blok.
+- **Off-hand Gear Priority & Active Shield Defense**: Prioritas otomatis slot tangan kiri: **#1 Totem of Undying**, **#2 Shield**. Dilengkapi refleks menaikkan shield saat dibidik skeleton/stray atau terkena serangan tiba-tiba.
+- **Modern 26.x Physics Synchronization**: Injeksi paket `tick_end` pada setiap physics tick agar kebal dari kick `invalid_player_movement` di server Fabric modern.
 
 ### 3. 🛡️ Mode AFK Farm Sentry (`!farm` / `!afk`)
 - **Anchor Position Lock**: Mengunci koordinat $X, Y, Z$ agar bot tidak terdorong mob ke dalam lubang farm atau jurang.
@@ -48,15 +50,19 @@
 
 ### 4. 💓 Heartbeat & Autonomous Desires (Gerak Mandiri)
 - **Heartbeat Tick (Interval Acak 5s, 10s, 15s)**: Siklus evaluasi otomatis untuk memeriksa kondisi lingkungan tanpa membebani server.
+- **Natural Vanilla Entity Movement**: Dilengkapi navigasi pintu kayu/gerbang otomatis, anti-suffocation reflex, jarak follow 3 blok yang nyaman, dan pergerakan kepala natural (*smooth idle glance*) layaknya mob vanilla.
 - **Curiosity Roaming**: Jika menganggur (*idle* $> 25$ detik), Gaia berjalan-jalan santai dalam radius aman base (tidak menjadi patung diam).
 - **Proximity Greet**: Menyapa Nat atau Ijul secara mandiri saat mendekat setelah bepergian jauh.
 - **Auto-Replant Farm**: Memanen tanaman matang di sekitar base dan menanam bibitnya kembali.
 
-### 5. ⛏️ Smart Mining Vacuum & Master Job Terminator
+### 5. ⛏️ Utility Systems (Mining, Crafting, Chest, Bed & Inv)
 - **Auto Drop Collection Engine (`pickupNearbyDrops`)**: Saat menambang (`!mine`), Gaia tidak hanya memecahkan blok dari jarak jauh, melainkan otomatis melangkah ke koordinat jatuhnya blok dan menyedot seluruh entitas drop (`item`) dalam radius 6 blok ke dalam inventory.
+- **Chest Navigation & Aggregation (`!chest`)**: Membatalkan pergerakan follow, berjalan langsung ke peti terdekat (hingga 12 blok), dan melaporkan isi peti terkelompok rapi.
+- **Autonomous Crafting Engine (`!craft`)**: Mampu merakit resep 2x2 dan otomatis berjalan mendekati Crafting Table untuk resep 3x3.
+- **Bed & Sleep Cycle (`!sleep` / `!wake`)**: Mendeteksi kasur terdekat dan tidur bersama saat malam tiba atau terjadi badai petir (*thunderstorm*).
+- **Full Grouped Inventory (`!inv`)**: Menampilkan seluruh isi tas tanpa terpotong dalam format stack ringkas seperti `Carrot (5 x 64 + 5)` atau `Diamond (12)`.
 - **Master Job Terminator (`!stop` / `!stay` / `!cancel`)**: Menghentikan SEMUA pekerjaan aktif secara instan — baik loop penambangan, tebang kayu, panen kebun, AFK farm sentry, maupun guard mode — dan mengunci posisi standby di tempat.
-- **Modern Async/Await Consumption Engine**: Sistem makan berbasis Promise murni dengan prioritas Golden Apple saat sekarat atau Golden Carrot untuk saturasi penuh, dilengkapi antrean rate-limiting chat 450ms tanpa paket drop.
-- **Dynamic Natural Ore Parsing**: DeepSeek LLM secara otomatis menerjemahkan perintah obrolan natural (seperti *"Gaia cari batu 10"* atau *"Gaia gali coal"*) menjadi parameter jenis ore dan jumlah blok yang tepat.
+- **Single-Reply AI Protocol**: Menghilangkan duplikasi respon chat; memprioritaskan respon dialog AI DeepSeek dan hanya menggunakan pesan prebuilt sebagai fallback.
 
 ---
 
@@ -124,7 +130,7 @@ Sesuaikan isi `config.json`:
   "scanRadius": 10,
   "llmEndpoint": "https://api.nusagate.com/v1",
   "llmApiKey": "YOUR_API_KEY_HERE",
-  "llmModel": "qwen3.8-flash"
+  "llmModel": "deepseek-v4.1-flash"
 }
 ```
 
